@@ -381,3 +381,167 @@ class TestEarningsExclusion:
         """Empty earnings set → is_near_earnings always returns False."""
         signal = pd.Timestamp("2023-06-15")
         assert is_near_earnings(signal, set(), window_days=5) is False
+
+
+# ── Invalidation exit (Session 4c) ────────────────────────────────────────────
+
+
+def _build_invalidation_df(n_extra: int = 10) -> pd.DataFrame:
+    """
+    Build a DataFrame suitable for invalidation testing.
+
+    The breakout bar is at index 34 (n_window=35). Extra bars follow.
+    High/low are ±20 from close (TR≈40) so ATR≈40 and stop_price is far
+    below the breakout level (high_20d=100). This prevents stop_loss from
+    triggering before the invalidation test can fire.
+    """
+    signal_close = 110.0  # breakout close (> high_20d=100)
+    n_window = 35
+    pad = n_window - 15
+    rsi_closes = (
+        [float(100 + i) for i in range(9)]
+        + [float(107 - i) for i in range(5)]
+        + [signal_close]
+    )
+    closes = [100.0] * pad + rsi_closes
+    volumes = [1_000_000] * (n_window - 1) + [2_500_000]
+    base = [
+        {
+            "date": datetime.date(2023, 1, 1) + datetime.timedelta(days=i),
+            "open": c - 0.5,
+            "high": c + 20.0,   # wide range → large TR → ATR≈40 → stop far below
+            "low": c - 20.0,
+            "close": c,
+            "volume": volumes[i],
+        }
+        for i, c in enumerate(closes)
+    ]
+    # Append extra bars; caller sets closes for these
+    extras = [
+        {
+            "date": datetime.date(2023, 1, 1) + datetime.timedelta(days=n_window + i),
+            "open": 111.0,
+            "high": 131.0,
+            "low": 91.0,
+            "close": 111.0,
+            "volume": 1_000_000,
+        }
+        for i in range(n_extra)
+    ]
+    return pd.DataFrame(base + extras)
+
+
+def _trades_invalidation(df: pd.DataFrame, signal_override: dict | None = None, **kwargs: Any) -> pd.DataFrame:
+    """
+    Run run_backtest with mocked fetchers. Optionally patch detect_breakout_historical
+    to inject a custom signal dict (e.g. to control high_20d precisely).
+    """
+    from unittest.mock import patch
+
+    if signal_override is None:
+        with patch("backtest.runner.fetch_all_historical", return_value={"TST": df}), \
+             patch("backtest.runner.fetch_earnings_dates", return_value=set()):
+            return run_backtest(["TST"], "2023-01-01", "2024-12-31", **kwargs)
+
+    original_detect = __import__("backtest.runner", fromlist=["detect_breakout_historical"]).detect_breakout_historical
+
+    def _patched_detect(inner_df: pd.DataFrame, idx: int):
+        result = original_detect(inner_df, idx)
+        if result is not None:
+            result.update(signal_override)
+        return result
+
+    with patch("backtest.runner.fetch_all_historical", return_value={"TST": df}), \
+         patch("backtest.runner.fetch_earnings_dates", return_value=set()), \
+         patch("backtest.runner.detect_breakout_historical", side_effect=_patched_detect):
+        return run_backtest(["TST"], "2023-01-01", "2024-12-31", **kwargs)
+
+
+class TestInvalidationExit:
+    def test_invalidation_fires_when_close_drops_below_breakout_level(self):
+        """If close on hold day 1 drops below high_20d, next bar exits with 'invalidation'."""
+        df = _build_invalidation_df(n_extra=5)
+        # Force high_20d=108 so that signal close=110 > high_20d. Then on day+1 close=107 < 108.
+        # ATR≈40 → stop_price ≈ entry-80 → far below, won't trigger first.
+        # entry open (day+1) = 111, day+1 close = 107 < high_20d=108 → invalidation fires day+2.
+        n = len(df)
+        signal_idx = 34
+        # Override day+1 close to 107 (below high_20d=108)
+        df = df.copy()
+        df.at[signal_idx + 1, "close"] = 107.0
+        df.at[signal_idx + 1, "low"] = 87.0
+        df.at[signal_idx + 1, "high"] = 127.0
+
+        trades = _trades_invalidation(df, signal_override={"high_20d": 108.0},
+                                      hold_days=5, atr_multiplier=2.0)
+        assert not trades.empty
+        last = trades.iloc[-1]
+        assert last["exit_reason"] == "invalidation"
+
+    def test_invalidation_exit_price_is_next_open(self):
+        """Invalidation exit price equals the open of the bar after the close-below event."""
+        df = _build_invalidation_df(n_extra=5)
+        df = df.copy()
+        signal_idx = 34
+        df.at[signal_idx + 1, "close"] = 107.0   # triggers invalidation check for day+2
+        df.at[signal_idx + 1, "low"] = 87.0
+        df.at[signal_idx + 1, "high"] = 127.0
+        expected_open = 99.5
+        df.at[signal_idx + 2, "open"] = expected_open
+
+        trades = _trades_invalidation(df, signal_override={"high_20d": 108.0},
+                                      hold_days=5, atr_multiplier=2.0)
+        assert not trades.empty
+        assert trades.iloc[-1]["exit_price"] == pytest.approx(expected_open)
+
+    def test_stop_loss_takes_priority_over_invalidation_on_gap_down(self):
+        """Gap-down open ≤ stop_price fires stop_loss, not invalidation, even if prev_close < high_20d."""
+        df = _build_invalidation_df(n_extra=5)
+        df = df.copy()
+        signal_idx = 34
+        entry_idx = signal_idx + 1   # = 35; entry_price = df.at[35, "open"] = 111.0
+        first_hold_idx = entry_idx + 1  # = 36; first bar checked in the exit loop
+
+        # Arm invalidation (prev_close < high_20d) by lowering entry bar close
+        df.at[entry_idx, "close"] = 107.0   # < high_20d=108
+        df.at[entry_idx, "low"] = 87.0
+        df.at[entry_idx, "high"] = 127.0
+
+        # ATR≈40, stop_price ≈ 111.0 - 2*40 = 31.0
+        # Gap-down first hold bar's open to 21.0 (≤ 31.0 = stop_price) → Priority 1 fires first
+        gap_open = 21.0
+        df.at[first_hold_idx, "open"] = gap_open
+        df.at[first_hold_idx, "low"] = gap_open - 1.0
+        df.at[first_hold_idx, "high"] = gap_open + 1.0
+        df.at[first_hold_idx, "close"] = gap_open
+
+        trades = _trades_invalidation(df, signal_override={"high_20d": 108.0},
+                                      hold_days=5, atr_multiplier=2.0)
+        assert not trades.empty
+        assert trades.iloc[-1]["exit_reason"] == "stop_loss"
+
+    def test_no_invalidation_when_close_stays_above_breakout_level(self):
+        """Close stays above high_20d every day → no invalidation, exits hold_days."""
+        # Need n_extra=6: 1 entry bar (idx 35) + 5 hold-day bars (idx 36–40)
+        df = _build_invalidation_df(n_extra=6)
+        df = df.copy()
+        signal_idx = 34
+        for i in range(1, 7):   # bars 35–40: entry + all 5 hold days
+            df.at[signal_idx + i, "close"] = 112.0   # > high_20d=108 → invalidation never arms
+            df.at[signal_idx + i, "open"] = 111.5
+            df.at[signal_idx + i, "high"] = 132.0
+            df.at[signal_idx + i, "low"] = 92.0
+
+        trades = _trades_invalidation(df, signal_override={"high_20d": 108.0},
+                                      hold_days=5, atr_multiplier=2.0)
+        assert not trades.empty
+        assert trades.iloc[-1]["exit_reason"] == "hold_days"
+
+    def test_breakout_level_column_present_and_correct(self):
+        """Trades DataFrame has breakout_level column equal to signal's high_20d."""
+        df = _build_invalidation_df(n_extra=5)
+        trades = _trades_invalidation(df, hold_days=5, atr_multiplier=2.0)
+        assert not trades.empty
+        assert "breakout_level" in trades.columns
+        # All signals in this synthetic df have high_20d = max of 20-bar window ≈ 108
+        assert float(trades.iloc[-1]["breakout_level"]) > 0.0

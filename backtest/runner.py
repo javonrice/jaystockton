@@ -48,6 +48,21 @@ _BASELINE: dict[str, Any] = {
     "total_net_return_pct": 94.3683,
     "avg_stop_pct_implied": 5.00,
     "signals_skipped_earnings": "n/a",
+    "pct_invalidation_exits": "n/a",
+}
+
+# Hardcoded Session 4b baseline (ATR stop + earnings filter, 2023-2024)
+_BASELINE_4B: dict[str, Any] = {
+    "total_trades": 164,
+    "win_rate": 0.6220,
+    "avg_win_pct": 3.6604,
+    "avg_loss_pct": -4.2736,
+    "profit_factor": 1.4091,
+    "max_drawdown_pct": -62.1487,
+    "sharpe_ratio": 2.0368,
+    "total_net_return_pct": 108.3928,
+    "signals_skipped_earnings": 66,
+    "pct_invalidation_exits": "n/a",
 }
 
 
@@ -351,10 +366,12 @@ def run_backtest(
 
             stop_price = entry_price - atr_multiplier * atr
             stop_pct_implied = (entry_price - stop_price) / entry_price
+            high_20d = signal["high_20d"]
 
             exit_idx = entry_idx
             exit_price = entry_price
             exit_reason = "hold_days"
+            prev_close = float(df.iloc[entry_idx]["close"])
 
             for j in range(1, hold_days + 1):
                 bar_idx = entry_idx + j
@@ -363,16 +380,33 @@ def run_backtest(
                     exit_price = float(df.iloc[exit_idx]["close"])
                     exit_reason = "end_of_data"
                     break
+                bar_open = float(df.iloc[bar_idx]["open"])
                 bar_close = float(df.iloc[bar_idx]["close"])
+                # Priority 1: gap-down through stop at open
+                if bar_open <= stop_price:
+                    exit_idx = bar_idx
+                    exit_price = bar_open
+                    exit_reason = "stop_loss"
+                    break
+                # Priority 2: prior close fell back below breakout level
+                if prev_close < high_20d:
+                    exit_idx = bar_idx
+                    exit_price = bar_open
+                    exit_reason = "invalidation"
+                    break
+                # Priority 3: intraday close through stop
                 if bar_close <= stop_price:
                     exit_idx = bar_idx
                     exit_price = bar_close
                     exit_reason = "stop_loss"
                     break
+                # Priority 4: time exit
                 if j == hold_days:
                     exit_idx = bar_idx
                     exit_price = bar_close
                     exit_reason = "hold_days"
+                    break
+                prev_close = bar_close
 
             gross = (exit_price - entry_price) / entry_price
             net = gross - 2.0 * commission_per_trade
@@ -394,6 +428,7 @@ def run_backtest(
                 "atr_at_entry": atr,
                 "stop_price": round(stop_price, 4),
                 "stop_pct_implied": round(stop_pct_implied * 100, 4),
+                "breakout_level": round(high_20d, 4),
             })
 
     result = pd.DataFrame(trades)
@@ -432,6 +467,7 @@ def compute_metrics(trades: pd.DataFrame) -> dict[str, Any]:
         "avg_hold_days": 0.0,
         "signals_per_month": 0.0,
         "pct_stopped_out": 0.0,
+        "pct_invalidation_exits": 0.0,
     }
     if trades.empty:
         return zeros
@@ -470,6 +506,9 @@ def compute_metrics(trades: pd.DataFrame) -> dict[str, Any]:
     pct_stopped = (
         100.0 * (trades["exit_reason"] == "stop_loss").sum() / len(trades)
     )
+    pct_invalidation = (
+        100.0 * (trades["exit_reason"] == "invalidation").sum() / len(trades)
+    )
 
     return {
         "total_trades": int(len(trades)),
@@ -486,6 +525,7 @@ def compute_metrics(trades: pd.DataFrame) -> dict[str, Any]:
         "avg_hold_days": round(float(trades["hold_days_actual"].mean()), 2),
         "signals_per_month": round(signals_per_month, 2),
         "pct_stopped_out": round(pct_stopped, 2),
+        "pct_invalidation_exits": round(pct_invalidation, 2),
     }
 
 
@@ -508,34 +548,50 @@ def _verdict_4b(m: dict[str, Any]) -> tuple[bool, list[str]]:
     return len(failures) == 0, failures
 
 
+def _verdict_4c(m: dict[str, Any]) -> tuple[bool, list[str]]:
+    """4c PASS criteria — same thresholds as 4b (invalidation is structural, not a new bar)."""
+    return _verdict_4b(m)
+
+
+def _verdict_oos(m: dict[str, Any]) -> tuple[bool, list[str]]:
+    """OOS PASS criteria — relaxed for single-year sample; positive EV is the minimum."""
+    criteria = [
+        (m["total_trades"] >= 10,
+         f"total_trades={m['total_trades']} (need >=10)"),
+        (m["profit_factor"] >= 1.0,
+         f"profit_factor={m['profit_factor']} (need >=1.0)"),
+        (m["win_rate"] >= 0.40,
+         f"win_rate={m['win_rate']} (need >=0.40)"),
+        (m["sharpe_ratio"] >= 0.0,
+         f"sharpe={m['sharpe_ratio']} (need >=0.0)"),
+    ]
+    failures = [msg for passed, msg in criteria if not passed]
+    return len(failures) == 0, failures
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 
 def main() -> None:
     """
-    Run the 4b backtest and print a side-by-side comparison with the 4a baseline.
+    Run Session 4c backtest + 2025 OOS test, print 4-column comparison.
 
-    Gates: Breakout + RSI (unchanged from 4a).
-    Stop:  ATR(14) x 2.0 (replaces fixed 5%).
-    Skip:  Signals within 5 calendar days of an earnings announcement.
-
+    Columns: BASELINE (4a fixed stop) | 4b (ATR+earnings) | 4c (4b+invalidation) | OOS 2025
     NOTE: Backtest applies breakout + RSI gates only.
           VWAP and sector filters are active in the live scanner.
     """
-    print("=" * 65)
-    print("SIGNAL BRAIN — SESSION 4b BACKTEST")
-    print("Period : 2023-01-01 → 2024-12-31  (2 full years)")
-    print("Gates  : Breakout (20d high + 1.5x vol) + RSI(14) 50–75")
-    print("Stop   : ATR(14) × 2.0  (replaces fixed 5%)")
-    print("Excl.  : ±5 days around earnings announcements")
-    print("NOTE   : VWAP and sector filters active in live scanner only.")
-    print("=" * 65)
+    print("=" * 80)
+    print("SIGNAL BRAIN — SESSION 4c BACKTEST  +  2025 OUT-OF-SAMPLE TEST")
+    print("Period  : 2023-01-01 → 2024-12-31  (in-sample) | 2025-01-01 → 2025-12-31 (OOS)")
+    print("Gates   : Breakout (20d high + 1.5x vol) + RSI(14) 50–75")
+    print("Stop    : ATR(14) × 2.0")
+    print("Excl.   : ±5 days around earnings announcements")
+    print("New     : Invalidation exit — close below breakout level → exit next open")
+    print("NOTE    : VWAP and sector filters active in live scanner only.")
+    print("=" * 80)
     print(f"Scanning {len(config.ALL_TICKERS)} tickers …\n")
 
-    trades_4b = run_backtest(
-        tickers=config.ALL_TICKERS,
-        start=config.BACKTEST_START,
-        end=config.BACKTEST_END,
+    common_kwargs = dict(
         hold_days=config.BACKTEST_HOLD_DAYS,
         stop_loss_pct=config.BACKTEST_STOP_LOSS_PCT,
         commission_per_trade=config.BACKTEST_COMMISSION,
@@ -543,81 +599,106 @@ def main() -> None:
         earnings_window_days=config.EARNINGS_WINDOW_DAYS,
     )
 
-    m4b = compute_metrics(trades_4b)
-    skipped = trades_4b.attrs.get("signals_skipped_earnings", 0)
-    avg_stop_4b = (
-        round(float(trades_4b["stop_pct_implied"].mean()), 2)
-        if not trades_4b.empty and "stop_pct_implied" in trades_4b.columns
-        else 0.0
+    trades_4c = run_backtest(
+        tickers=config.ALL_TICKERS,
+        start=config.BACKTEST_START,
+        end=config.BACKTEST_END,
+        **common_kwargs,
+    )
+    trades_oos = run_backtest(
+        tickers=config.ALL_TICKERS,
+        start=config.OOS_START,
+        end=config.OOS_END,
+        **common_kwargs,
     )
 
-    # ── Side-by-side comparison ────────────────────────────────────────────
-    W = 18
-    print("=" * 65)
-    print("SESSION 4 BASELINE vs SESSION 4b COMPARISON")
-    print("=" * 65)
-    header = f"{'Metric':<30} {'BASELINE':>{W}} {'4b (ATR+Earnings)':>{W}}"
+    m4c = compute_metrics(trades_4c)
+    m_oos = compute_metrics(trades_oos)
+
+    skipped_4c = trades_4c.attrs.get("signals_skipped_earnings", 0)
+    skipped_oos = trades_oos.attrs.get("signals_skipped_earnings", 0)
+
+    def _avg_stop(t: pd.DataFrame) -> str:
+        if not t.empty and "stop_pct_implied" in t.columns:
+            return f"{t['stop_pct_implied'].mean():.2f}%"
+        return "0.00%"
+
+    # ── 4-column comparison ────────────────────────────────────────────────
+    W = 14
+    print("=" * 80)
+    print("COMPARISON: BASELINE | 4b | 4c | OOS 2025")
+    print("=" * 80)
+    header = (
+        f"{'Metric':<30}"
+        f" {'BASELINE':>{W}}"
+        f" {'4b':>{W}}"
+        f" {'4c':>{W}}"
+        f" {'OOS 2025':>{W}}"
+    )
     print(header)
-    print("─" * 65)
+    print("─" * 80)
 
-    rows = [
-        ("total_trades",            _BASELINE["total_trades"],          m4b["total_trades"]),
-        ("win_rate",                _BASELINE["win_rate"],               m4b["win_rate"]),
-        ("avg_win_pct",             _BASELINE["avg_win_pct"],            m4b["avg_win_pct"]),
-        ("avg_loss_pct",            _BASELINE["avg_loss_pct"],           m4b["avg_loss_pct"]),
-        ("profit_factor",           _BASELINE["profit_factor"],          m4b["profit_factor"]),
-        ("max_drawdown_pct",        _BASELINE["max_drawdown_pct"],       m4b["max_drawdown_pct"]),
-        ("sharpe_ratio",            _BASELINE["sharpe_ratio"],           m4b["sharpe_ratio"]),
-        ("total_net_return_pct",    _BASELINE["total_net_return_pct"],   m4b["total_net_return_pct"]),
-        ("signals_skipped_earnings", _BASELINE["signals_skipped_earnings"], skipped),
-        ("avg_stop_pct_implied",    f"{_BASELINE['avg_stop_pct_implied']:.2f}%", f"{avg_stop_4b:.2f}%"),
-    ]
-    for label, base_val, new_val in rows:
-        print(f"  {label:<28} {str(base_val):>{W}} {str(new_val):>{W}}")
+    def _row(label: str, b: Any, b4b: Any, b4c: Any, oos: Any) -> None:
+        print(f"  {label:<28} {str(b):>{W}} {str(b4b):>{W}} {str(b4c):>{W}} {str(oos):>{W}}")
 
-    # Baseline verdict (4a criteria)
-    baseline_4a_passed = (
-        _BASELINE["total_trades"] >= 30
-        and _BASELINE["profit_factor"] >= 1.2
-        and _BASELINE["win_rate"] >= 0.45
-        and _BASELINE["avg_win_pct"] > abs(_BASELINE["avg_loss_pct"])
-        and _BASELINE["max_drawdown_pct"] >= -25.0
-        and _BASELINE["sharpe_ratio"] >= 0.3
-    )
-    print(f"\n  BASELINE VERDICT : {'PASS ✓' if baseline_4a_passed else 'FAIL ✗'}")
+    _row("total_trades",
+         _BASELINE["total_trades"], _BASELINE_4B["total_trades"],
+         m4c["total_trades"], m_oos["total_trades"])
+    _row("win_rate",
+         _BASELINE["win_rate"], _BASELINE_4B["win_rate"],
+         m4c["win_rate"], m_oos["win_rate"])
+    _row("avg_win_pct",
+         _BASELINE["avg_win_pct"], _BASELINE_4B["avg_win_pct"],
+         m4c["avg_win_pct"], m_oos["avg_win_pct"])
+    _row("avg_loss_pct",
+         _BASELINE["avg_loss_pct"], _BASELINE_4B["avg_loss_pct"],
+         m4c["avg_loss_pct"], m_oos["avg_loss_pct"])
+    _row("profit_factor",
+         _BASELINE["profit_factor"], _BASELINE_4B["profit_factor"],
+         m4c["profit_factor"], m_oos["profit_factor"])
+    _row("max_drawdown_pct",
+         _BASELINE["max_drawdown_pct"], _BASELINE_4B["max_drawdown_pct"],
+         m4c["max_drawdown_pct"], m_oos["max_drawdown_pct"])
+    _row("sharpe_ratio",
+         _BASELINE["sharpe_ratio"], _BASELINE_4B["sharpe_ratio"],
+         m4c["sharpe_ratio"], m_oos["sharpe_ratio"])
+    _row("total_net_return_pct",
+         _BASELINE["total_net_return_pct"], _BASELINE_4B["total_net_return_pct"],
+         m4c["total_net_return_pct"], m_oos["total_net_return_pct"])
+    _row("signals_skipped_earnings",
+         _BASELINE["signals_skipped_earnings"], _BASELINE_4B["signals_skipped_earnings"],
+         skipped_4c, skipped_oos)
+    _row("pct_invalidation_exits",
+         _BASELINE["pct_invalidation_exits"], _BASELINE_4B["pct_invalidation_exits"],
+         f"{m4c['pct_invalidation_exits']:.2f}%", f"{m_oos['pct_invalidation_exits']:.2f}%")
+    _row("avg_stop_pct_implied",
+         f"{_BASELINE['avg_stop_pct_implied']:.2f}%", "n/a",
+         _avg_stop(trades_4c), _avg_stop(trades_oos))
 
-    passed_4b, failures_4b = _verdict_4b(m4b)
-    if passed_4b:
-        print("  4b VERDICT       : PASS ✓")
-    else:
-        print("  4b VERDICT       : FAIL ✗")
-        for f in failures_4b:
-            print(f"    • {f}")
-    print("=" * 65)
+    print()
+    passed_4c, failures_4c = _verdict_4c(m4c)
+    passed_oos, failures_oos = _verdict_oos(m_oos)
+    print(f"  4c VERDICT   : {'PASS ✓' if passed_4c else 'FAIL ✗'}")
+    for f in failures_4c:
+        print(f"    • {f}")
+    print(f"  OOS VERDICT  : {'PASS ✓' if passed_oos else 'FAIL ✗'}")
+    for f in failures_oos:
+        print(f"    • {f}")
+    print("=" * 80)
 
-    if not trades_4b.empty:
-        print("\n─" * 23)
-        print("TOP 5 BEST TRADES")
-        print("─" * 45)
+    if not trades_4c.empty:
         cols = ["ticker", "signal_date", "entry_price", "exit_price",
-                "net_return_pct", "stop_pct_implied", "exit_reason"]
-        print(trades_4b.nlargest(5, "net_return_pct")[cols].to_string(index=False))
+                "net_return_pct", "stop_pct_implied", "exit_reason", "breakout_level"]
+        print("\n── TOP 5 BEST (4c in-sample) ──")
+        print(trades_4c.nlargest(5, "net_return_pct")[cols].to_string(index=False))
+        print("\n── TOP 5 WORST (4c in-sample) ──")
+        print(trades_4c.nsmallest(5, "net_return_pct")[cols].to_string(index=False))
 
-        print("\n─" * 23)
-        print("TOP 5 WORST TRADES")
-        print("─" * 45)
-        print(trades_4b.nsmallest(5, "net_return_pct")[cols].to_string(index=False))
-
-        print("\n─" * 23)
-        print("SIGNALS PER TICKER")
-        print("─" * 45)
-        counts = (
-            trades_4b.groupby("ticker")
-            .size()
-            .reset_index(name="signals")
-            .sort_values("signals", ascending=False)
-        )
-        print(counts.to_string(index=False))
+    if not trades_oos.empty:
+        print("\n── OOS 2025 ALL TRADES ──")
+        oos_cols = ["ticker", "signal_date", "entry_price", "exit_price",
+                    "net_return_pct", "exit_reason", "breakout_level"]
+        print(trades_oos[oos_cols].to_string(index=False))
 
 
 if __name__ == "__main__":

@@ -94,6 +94,10 @@ BACKTEST_ATR_MULTIPLIER: float = 2.0
 BACKTEST_ATR_PERIOD: int = 14
 EARNINGS_WINDOW_DAYS: int = 5
 
+# --- Session 4c: out-of-sample ---
+OOS_START: str = "2025-01-01"
+OOS_END: str = "2025-12-31"
+
 SECTOR_MAP: dict[str, str | None] = {
     "AAPL": "XLK", "MSFT": "XLK", "NVDA": "XLK", "AMD": "XLK",
     "QCOM": "XLK", "INTC": "XLK", "MU": "XLK", "AVGO": "XLK",
