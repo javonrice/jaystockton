@@ -9,3 +9,5 @@ pytest>=8.0.0
 pytest-mock>=3.14.0
 yfinance>=0.2.40
 lxml>=5.0.0
+pandas-ta>=0.3.14b
+smartmoneyconcepts>=0.0.9
