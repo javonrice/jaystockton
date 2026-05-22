@@ -57,17 +57,80 @@ BARS_FALLBACK_LIMIT: int = int(os.getenv("BARS_FALLBACK_LIMIT", "390"))
 
 # --- Ticker universe ---
 
-TIER_1_TICKERS: list[str] = [
-    "SPY", "QQQ", "AAPL", "MSFT", "NVDA", "AMD", "TSLA", "AMZN",
-    "GOOGL", "META", "NFLX", "CRM", "ORCL", "ADBE", "QCOM", "INTC",
-    "MU", "AVGO", "TSM", "ASML", "ARM", "SMCI",
+# Mega-cap tech
+MEGA_CAP: list[str] = [
+    "AAPL", "MSFT", "GOOGL", "META", "AMZN", "NVDA", "TSLA", "NFLX",
+    "ORCL", "ADBE", "CRM", "NOW", "SHOP",
 ]
 
-TIER_2_TICKERS: list[str] = [
-    "XLK", "SMH", "XLF", "XLE", "XBI", "XLV", "XLI", "XLY", "XLC", "ARKK",
+# Semiconductors
+SEMIS: list[str] = [
+    "AMD", "INTC", "QCOM", "AVGO", "MU", "TSM", "ASML", "ARM", "SMCI",
+    "AMAT", "LRCX", "KLAC", "MRVL", "MPWR",
 ]
 
-ALL_TICKERS: list[str] = TIER_1_TICKERS + TIER_2_TICKERS
+# AI infrastructure
+AI_INFRA: list[str] = [
+    "PLTR", "AI", "PATH", "IONQ", "DELL", "PSTG", "CRWV", "CIEN",
+]
+
+# Cybersecurity
+CYBER: list[str] = [
+    "CRWD", "PANW", "FTNT", "ZS", "OKTA", "S", "CYBR", "NET", "RPD", "TENB",
+]
+
+# Chinese ADRs
+CHINA_ADRS: list[str] = [
+    "BABA", "JD", "PDD", "BIDU", "NIO", "LI", "XPEV", "BILI",
+    "FUTU", "TCOM", "EDU", "VNET",
+]
+
+# Meme and retail momentum
+MEME_MOMENTUM: list[str] = [
+    "GME", "MSTR", "COIN", "HOOD", "SOFI", "RKLB", "ACHR", "JOBY",
+]
+
+# Biotech
+BIOTECH: list[str] = [
+    "MRNA", "BNTX", "REGN", "BIIB", "VRTX", "ILMN", "BEAM", "CRSP",
+    "RXRX", "PACB",
+]
+
+# EV and clean energy
+EV_CLEAN: list[str] = [
+    "RIVN", "LCID", "CHPT", "PLUG", "ENPH", "SEDG", "RUN", "BE",
+]
+
+# Fintech
+FINTECH: list[str] = [
+    "V", "MA", "PYPL", "SQ", "AFRM", "UPST", "NU",
+]
+
+# Defense
+DEFENSE: list[str] = [
+    "LMT", "RTX", "NOC", "GD", "BA", "KTOS",
+]
+
+# Retail and consumer momentum
+CONSUMER: list[str] = [
+    "COST", "LULU", "NKE", "ONON", "CELH", "APP", "DECK",
+]
+
+# Sector ETFs — market context
+SECTOR_ETFS: list[str] = [
+    "SPY", "QQQ", "IWM", "XLK", "XLF", "XLE", "XBI", "XLV",
+    "XLI", "XLY", "XLC", "SMH", "ARKK", "CIBR", "BOTZ",
+]
+
+# Legacy aliases — kept so Sessions 1-3 live scanner references don't break
+TIER_1_TICKERS: list[str] = MEGA_CAP + SEMIS
+TIER_2_TICKERS: list[str] = SECTOR_ETFS
+
+ALL_TICKERS: list[str] = (
+    MEGA_CAP + SEMIS + AI_INFRA + CYBER + CHINA_ADRS +
+    MEME_MOMENTUM + BIOTECH + EV_CLEAN + FINTECH +
+    DEFENSE + CONSUMER + SECTOR_ETFS
+)
 
 # --- Session 2: daily bars + breakout signal ---
 DAILY_BAR_LIMIT: int = 30
