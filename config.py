@@ -75,3 +75,22 @@ VOLUME_RATIO_MIN: float = 1.5
 BREAKOUT_LOOKBACK: int = 20
 EOD_SCAN_HOUR: int = 16
 EOD_SCAN_MINUTE: int = 5
+
+# --- Session 3: momentum filters ---
+RSI_PERIOD: int = 14
+RSI_MIN: float = 50.0
+RSI_MAX: float = 75.0
+VWAP_MIN_BARS: int = 30
+
+SECTOR_MAP: dict[str, str | None] = {
+    "AAPL": "XLK", "MSFT": "XLK", "NVDA": "XLK", "AMD": "XLK",
+    "QCOM": "XLK", "INTC": "XLK", "MU": "XLK", "AVGO": "XLK",
+    "TSM": "XLK", "ASML": "XLK", "ARM": "XLK", "SMCI": "XLK",
+    "ADBE": "XLK", "CRM": "XLK", "ORCL": "XLK",
+    "TSLA": "XLY", "AMZN": "XLY",
+    "GOOGL": "XLC", "META": "XLC", "NFLX": "XLC",
+    "SPY": None, "QQQ": None,
+    "XLK": None, "SMH": None, "XLF": None, "XLE": None,
+    "XBI": None, "XLV": None, "XLI": None, "XLY": None,
+    "XLC": None, "ARKK": None,
+}

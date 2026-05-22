@@ -74,11 +74,13 @@ def get_logger(name: str) -> logging.Logger:
 
 def init_signals_table(conn: duckdb.DuckDBPyConnection) -> None:
     """
-    Create the signals table if it does not exist.
+    Create the signals table if it does not exist, then add any missing
+    Session 3 momentum columns via ALTER TABLE IF NOT EXISTS.
 
-    Schema: ticker, date, signal_type, direction, close, volume,
-            avg_volume, volume_ratio, high_20d, created_at.
-    PRIMARY KEY on (ticker, date, signal_type) prevents duplicate signals.
+    Base schema (Session 2): ticker, date, signal_type, direction, close,
+    volume, avg_volume, volume_ratio, high_20d, created_at.
+    Added in Session 3: rsi_14, rsi_pass, vwap, vwap_pass,
+    sector_etf, sector_rsi, sector_pass, momentum_pass.
 
     Args:
         conn: Open DuckDB connection.
@@ -98,6 +100,17 @@ def init_signals_table(conn: duckdb.DuckDBPyConnection) -> None:
             PRIMARY KEY (ticker, date, signal_type)
         )
     """)
+    for col, dtype in [
+        ("rsi_14", "DOUBLE"),
+        ("rsi_pass", "BOOLEAN"),
+        ("vwap", "DOUBLE"),
+        ("vwap_pass", "BOOLEAN"),
+        ("sector_etf", "TEXT"),
+        ("sector_rsi", "DOUBLE"),
+        ("sector_pass", "BOOLEAN"),
+        ("momentum_pass", "BOOLEAN"),
+    ]:
+        conn.execute(f"ALTER TABLE signals ADD COLUMN IF NOT EXISTS {col} {dtype}")
 
 
 def store_signal(conn: duckdb.DuckDBPyConnection, signal: dict[str, Any]) -> None:
@@ -114,13 +127,20 @@ def store_signal(conn: duckdb.DuckDBPyConnection, signal: dict[str, Any]) -> Non
         """
         INSERT INTO signals
             (ticker, date, signal_type, direction, close, volume,
-             avg_volume, volume_ratio, high_20d, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+             avg_volume, volume_ratio, high_20d, created_at,
+             rsi_14, rsi_pass, vwap, vwap_pass,
+             sector_etf, sector_rsi, sector_pass, momentum_pass)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP,
+                ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (ticker, date, signal_type) DO NOTHING
         """,
         [
             signal["ticker"], signal["date"], signal["signal_type"],
             signal["direction"], signal["close"], signal["volume"],
             signal["avg_volume"], signal["volume_ratio"], signal["high_20d"],
+            signal.get("rsi_14"), signal.get("rsi_pass"),
+            signal.get("vwap"), signal.get("vwap_pass"),
+            signal.get("sector_etf"), signal.get("sector_rsi"),
+            signal.get("sector_pass"), signal.get("momentum_pass"),
         ],
     )

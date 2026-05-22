@@ -1,5 +1,5 @@
 """
-tests/test_signals.py — Tests for signals/breakout.py (Session 2).
+tests/test_signals.py — Tests for signals/breakout.py (Sessions 2+3).
 
 All tests use in-memory DuckDB — no files created, no Alpaca calls made.
 """
@@ -13,7 +13,7 @@ import duckdb
 import pandas as pd
 import pytest
 
-from feeds.market_data import init_daily_bars_table, store_daily_bars
+from feeds.market_data import init_daily_bars_table, init_db, store_bars, store_daily_bars
 from journal.logger import init_signals_table, store_signal
 from signals.breakout import detect_breakout, scan_all_breakouts
 
@@ -22,8 +22,8 @@ from signals.breakout import detect_breakout, scan_all_breakouts
 
 
 def _fresh_conn() -> duckdb.DuckDBPyConnection:
-    """Return an in-memory DuckDB connection with all Session 2 tables."""
-    conn = duckdb.connect(":memory:")
+    """Return an in-memory DuckDB connection with all Session 1-3 tables."""
+    conn = init_db(":memory:")          # creates bars table
     init_daily_bars_table(conn)
     init_signals_table(conn)
     return conn
@@ -72,6 +72,36 @@ def _make_daily_bars(
 
 def _seed(conn: duckdb.DuckDBPyConnection, df: pd.DataFrame) -> None:
     store_daily_bars(conn, df)
+
+
+def _seed_minute_bars(
+    conn: duckdb.DuckDBPyConnection,
+    ticker: str,
+    n_bars: int = 30,
+    base_close: float = 100.0,
+    last_close: float = 200.0,
+    volume: int = 10_000,
+) -> None:
+    """Insert n_bars minute bars for today. Last bar has last_close; the rest use base_close."""
+    today = datetime.datetime.now(tz=datetime.timezone.utc).date()
+    base_ts = datetime.datetime.combine(
+        today, datetime.time(9, 30), tzinfo=datetime.timezone.utc
+    )
+    rows: list[dict[str, Any]] = []
+    for i in range(n_bars - 1):
+        c = base_close
+        rows.append({
+            "ticker": ticker,
+            "timestamp": base_ts + datetime.timedelta(minutes=i),
+            "open": c, "high": c + 0.5, "low": c - 0.5, "close": c, "volume": volume,
+        })
+    c = last_close
+    rows.append({
+        "ticker": ticker,
+        "timestamp": base_ts + datetime.timedelta(minutes=n_bars - 1),
+        "open": c, "high": c + 0.5, "low": c - 0.5, "close": c, "volume": volume,
+    })
+    store_bars(conn, pd.DataFrame(rows))
 
 
 # ── detect_breakout() ─────────────────────────────────────────────────────────
@@ -208,14 +238,41 @@ class TestScanAllBreakouts:
         assert result == []
 
     def test_returns_signal_for_qualifying_ticker(self):
-        """AAPL meets both conditions → one signal in returned list."""
+        """SPY passes breakout + all momentum gates → one signal in returned list.
+
+        Close series design (21 bars, oldest→newest):
+          bars 1-6  : 100 (anchor 20d high at 108 without crowding RSI window)
+          bars 7-15 : 100→108 (8 up-moves)
+          bars 16-20: 107→103 (5 down-moves)
+          bar 21    : 109 > 20d_high=108 → breakout fires
+        15-bar RSI window: 8 gains of 1 + 5 losses of 1 + final gain of 6
+          → avg_gain=1.0, avg_loss=5/14, rs=2.8, RSI≈73.7 (passes 50–75).
+        VWAP: 29 bars at 490, last bar at 600 → last_close > vwap.
+        Sector: SPY→None in SECTOR_MAP → auto-pass.
+        """
         conn = _fresh_conn()
-        df = _make_daily_bars("AAPL", 21, today_close=101.0, today_volume=200_000,
-                               window_close=100.0, window_volume=100_000)
-        store_daily_bars(conn, df)
+        today = datetime.date.today()
+        closes = (
+            [100.0] * 6
+            + [float(100 + i) for i in range(9)]   # 100..108
+            + [float(107 - i) for i in range(5)]   # 107..103
+            + [109.0]                               # today
+        )
+        rows = [
+            {
+                "ticker": "SPY",
+                "date": today - datetime.timedelta(days=(20 - i)),
+                "open": c - 1.0, "high": c + 0.5, "low": c - 1.5,
+                "close": c,
+                "volume": 100_000_000 if i == 20 else 50_000_000,
+            }
+            for i, c in enumerate(closes)
+        ]
+        store_daily_bars(conn, pd.DataFrame(rows))
+        _seed_minute_bars(conn, "SPY", n_bars=30, base_close=490.0, last_close=600.0)
         results = scan_all_breakouts(conn)
         tickers = [s["ticker"] for s in results]
-        assert "AAPL" in tickers
+        assert "SPY" in tickers
 
 
 # ── store_daily_bars() deduplication ─────────────────────────────────────────

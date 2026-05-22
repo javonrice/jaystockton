@@ -94,19 +94,31 @@ def detect_breakout(ticker: str, conn: duckdb.DuckDBPyConnection) -> Optional[di
 
 def scan_all_breakouts(conn: duckdb.DuckDBPyConnection) -> list[dict[str, Any]]:
     """
-    Run detect_breakout for every ticker in ALL_TICKERS.
+    Two-gate scan: breakout detection followed by momentum confirmation.
 
-    Tickers with insufficient data or no signal return None and are skipped.
+    For each ticker:
+      1. detect_breakout — if None, skip.
+      2. run_momentum_filters — if momentum_pass is False, skip.
+      3. Merge both dicts into one signal and append.
 
     Args:
-        conn: DuckDB connection with daily_bars table populated.
+        conn: DuckDB connection with daily_bars and bars tables populated.
 
     Returns:
-        List of signal dicts (empty list if no breakouts detected).
+        List of merged signal dicts that passed both gates.
     """
+    from signals.momentum import run_momentum_filters  # deferred to avoid circular import
+
     signals: list[dict[str, Any]] = []
     for ticker in config.ALL_TICKERS:
-        result = detect_breakout(ticker, conn)
-        if result is not None:
-            signals.append(result)
+        breakout = detect_breakout(ticker, conn)
+        if breakout is None:
+            continue
+
+        momentum = run_momentum_filters(ticker, conn)
+        if not momentum["momentum_pass"]:
+            continue
+
+        signals.append({**breakout, **momentum})
+
     return signals
