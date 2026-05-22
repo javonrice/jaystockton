@@ -82,6 +82,13 @@ RSI_MIN: float = 50.0
 RSI_MAX: float = 75.0
 VWAP_MIN_BARS: int = 30
 
+# --- Session 4: backtest ---
+BACKTEST_START: str = "2023-01-01"
+BACKTEST_END: str = "2024-12-31"
+BACKTEST_HOLD_DAYS: int = 5
+BACKTEST_STOP_LOSS_PCT: float = 0.05
+BACKTEST_COMMISSION: float = 0.001
+
 SECTOR_MAP: dict[str, str | None] = {
     "AAPL": "XLK", "MSFT": "XLK", "NVDA": "XLK", "AMD": "XLK",
     "QCOM": "XLK", "INTC": "XLK", "MU": "XLK", "AVGO": "XLK",
