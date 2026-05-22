@@ -89,6 +89,11 @@ BACKTEST_HOLD_DAYS: int = 5
 BACKTEST_STOP_LOSS_PCT: float = 0.05
 BACKTEST_COMMISSION: float = 0.001
 
+# --- Session 4b: ATR stop + earnings exclusion ---
+BACKTEST_ATR_MULTIPLIER: float = 2.0
+BACKTEST_ATR_PERIOD: int = 14
+EARNINGS_WINDOW_DAYS: int = 5
+
 SECTOR_MAP: dict[str, str | None] = {
     "AAPL": "XLK", "MSFT": "XLK", "NVDA": "XLK", "AMD": "XLK",
     "QCOM": "XLK", "INTC": "XLK", "MU": "XLK", "AVGO": "XLK",

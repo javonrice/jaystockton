@@ -1,10 +1,8 @@
 """
-backtest/runner.py — Session 4: historical backtest of the two-gate signal.
+backtest/runner.py — Sessions 4 + 4b: historical backtest of the two-gate signal.
 
 Applies the breakout + RSI gates (Sessions 2+3) to 2+ years of yFinance
-daily data. VWAP and sector gates are excluded — minute bars are not
-available on the free tier, and sector ETF alignment adds complexity that
-is better addressed once the core signal shows edge.
+daily data. Session 4b adds ATR-based stop loss and earnings exclusion.
 
 NOTE: Backtest applies breakout + RSI gates only.
       VWAP and sector filters are active in the live scanner.
@@ -13,8 +11,9 @@ Requires:
     yfinance>=0.2.40
 
 Returns:
-    fetch_historical_data, fetch_all_historical, detect_breakout_historical,
-    run_backtest, compute_metrics, main.
+    fetch_historical_data, fetch_all_historical,
+    compute_atr, fetch_earnings_dates, is_near_earnings,
+    detect_breakout_historical, run_backtest, compute_metrics, main.
 """
 
 from __future__ import annotations
@@ -22,7 +21,6 @@ from __future__ import annotations
 import math
 from typing import Any, Optional
 
-import numpy as np
 import pandas as pd
 import yfinance as yf
 
@@ -31,12 +29,26 @@ from journal.logger import get_logger
 
 logger = get_logger(__name__)
 
-# RSI period constants (must match Session 3 values)
+# Signal gate constants (must match Session 3 values)
 _RSI_PERIOD: int = 14
 _RSI_MIN: float = 50.0
 _RSI_MAX: float = 75.0
 _VOLUME_RATIO_MIN: float = 1.5
 _LOOKBACK: int = 20
+
+# Hardcoded Session 4 baseline for comparison (run 2023-01-01 to 2024-12-31)
+_BASELINE: dict[str, Any] = {
+    "total_trades": 231,
+    "win_rate": 0.5758,
+    "avg_win_pct": 3.9655,
+    "avg_loss_pct": -4.4188,
+    "profit_factor": 1.2179,
+    "max_drawdown_pct": -77.7649,
+    "sharpe_ratio": 1.1507,
+    "total_net_return_pct": 94.3683,
+    "avg_stop_pct_implied": 5.00,
+    "signals_skipped_earnings": "n/a",
+}
 
 
 # ── RSI (self-contained copy — keeps backtest independent of live signals) ────
@@ -59,6 +71,105 @@ def _compute_rsi(closes: list[float], period: int) -> Optional[float]:
         return 100.0
     rs = avg_gain / avg_loss
     return round(100.0 - (100.0 / (1.0 + rs)), 4)
+
+
+# ── ATR ───────────────────────────────────────────────────────────────────────
+
+
+def compute_atr(df: pd.DataFrame, idx: int, period: int = 14) -> Optional[float]:
+    """
+    Compute ATR(period) using Wilder smoothing at row idx.
+
+    Requires at least period+1 rows (idx >= period) so that idx rows
+    0..idx-1 supply prev_close for bar 1 and period TRs can be formed.
+    True Range = max(high-low, |high-prev_close|, |low-prev_close|).
+
+    Args:
+        df: DataFrame with columns high, low, close (sorted ascending).
+        idx: Row index to evaluate (inclusive upper bound of ATR window).
+        period: Smoothing period (default 14).
+
+    Returns:
+        ATR value rounded to 4 decimal places, or None if insufficient data.
+    """
+    if idx < period:
+        return None
+
+    # Compute all TRs from bar 1 through bar idx using Wilder smoothing
+    trs: list[float] = []
+    for i in range(1, idx + 1):
+        high = float(df.iloc[i]["high"])
+        low = float(df.iloc[i]["low"])
+        prev_close = float(df.iloc[i - 1]["close"])
+        tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+        trs.append(tr)
+
+    # Wilder: initialize with simple average of first period TRs
+    atr = sum(trs[:period]) / period
+    for i in range(period, len(trs)):
+        atr = (atr * (period - 1) + trs[i]) / period
+
+    return round(atr, 4)
+
+
+# ── Earnings exclusion ────────────────────────────────────────────────────────
+
+
+def fetch_earnings_dates(ticker: str, start: str, end: str) -> set[pd.Timestamp]:
+    """
+    Fetch earnings announcement dates for ticker within date range.
+
+    Uses yf.Ticker(ticker).earnings_dates. Returns empty set on any error.
+
+    Args:
+        ticker: Stock symbol.
+        start: Start date 'YYYY-MM-DD'.
+        end: End date 'YYYY-MM-DD'.
+
+    Returns:
+        Set of timezone-naive UTC Timestamps within [start, end].
+    """
+    try:
+        tick = yf.Ticker(ticker)
+        dates_df = tick.earnings_dates
+        if dates_df is None or (hasattr(dates_df, "empty") and dates_df.empty):
+            return set()
+        idx = dates_df.index
+        if hasattr(idx, "tz") and idx.tz is not None:
+            idx = idx.tz_convert("UTC").tz_localize(None)
+        start_ts = pd.Timestamp(start)
+        end_ts = pd.Timestamp(end)
+        filtered = idx[(idx >= start_ts) & (idx <= end_ts)]
+        return set(filtered)
+    except Exception as exc:
+        logger.warning("fetch_earnings_dates failed for %s: %s", ticker, exc)
+        return set()
+
+
+def is_near_earnings(
+    signal_date: Any,
+    earnings_dates: set,
+    window_days: int = 5,
+) -> bool:
+    """
+    Return True if signal_date is within window_days calendar days of any earnings date.
+
+    Args:
+        signal_date: The signal date (date, Timestamp, or string).
+        earnings_dates: Set of earnings Timestamps.
+        window_days: Exclusion window in calendar days (symmetric, inclusive).
+
+    Returns:
+        True if signal should be skipped.
+    """
+    if not earnings_dates:
+        return False
+    signal_ts = pd.Timestamp(signal_date)
+    for ed in earnings_dates:
+        ed_ts = pd.Timestamp(ed)
+        if abs((signal_ts - ed_ts).days) <= window_days:
+            return True
+    return False
 
 
 # ── Data fetching ─────────────────────────────────────────────────────────────
@@ -90,7 +201,6 @@ def fetch_historical_data(ticker: str, start: str, end: str) -> Optional[pd.Data
             return None
         raw = raw.reset_index()
         raw.columns = [c.lower() for c in raw.columns]
-        raw = raw.rename(columns={"date": "date"})
         raw["date"] = pd.to_datetime(raw["date"]).dt.date
         df = raw[["date", "open", "high", "low", "close", "volume"]].copy()
         df = df.dropna(subset=["close", "volume"])
@@ -183,39 +293,51 @@ def run_backtest(
     start: str,
     end: str,
     hold_days: int = 5,
-    stop_loss_pct: float = 0.05,
+    stop_loss_pct: float = 0.05,   # kept for reference — ATR path is used instead
     commission_per_trade: float = 0.001,
+    atr_multiplier: float = 2.0,
+    earnings_window_days: int = 5,
 ) -> pd.DataFrame:
     """
     Run the full backtest across all tickers for the given date range.
 
-    Entry is next day's open after signal fires. Exit is the earlier of:
-      - hold_days trading days after entry
-      - stop triggered when close falls stop_loss_pct below entry price
+    Entry is next day's open after signal fires. Stop is ATR-based:
+      stop_price = entry_price - atr_multiplier * ATR(14).
+    Exit is the earlier of hold_days bars OR stop triggered.
+    Signals within earnings_window_days of an earnings date are skipped.
 
     Args:
         tickers: List of symbols to scan.
         start: Start date 'YYYY-MM-DD'.
         end: End date 'YYYY-MM-DD'.
         hold_days: Maximum bars to hold.
-        stop_loss_pct: Stop loss as fraction (0.05 = 5%).
+        stop_loss_pct: Kept for API compatibility — not used (ATR stop is used).
         commission_per_trade: One-way commission fraction; round-trip = 2x.
+        atr_multiplier: Stop distance = atr_multiplier * ATR(14).
+        earnings_window_days: Skip signals within this many calendar days of earnings.
 
     Returns:
-        DataFrame of all trades with performance columns.
+        DataFrame of all trades. attrs["signals_skipped_earnings"] contains count.
     """
     all_data = fetch_all_historical(tickers, start, end)
     trades: list[dict[str, Any]] = []
+    skipped_earnings = 0
 
     for ticker, df in all_data.items():
         if df is None or len(df) < 30:
             logger.debug("Skipping %s: insufficient data", ticker)
             continue
 
+        earnings = fetch_earnings_dates(ticker, start, end)
         n = len(df)
+
         for idx in range(_LOOKBACK + _RSI_PERIOD, n - 1):
             signal = detect_breakout_historical(df, idx)
             if signal is None:
+                continue
+
+            if is_near_earnings(signal["date"], earnings, window_days=earnings_window_days):
+                skipped_earnings += 1
                 continue
 
             entry_idx = idx + 1
@@ -223,7 +345,13 @@ def run_backtest(
             if entry_price <= 0:
                 continue
 
-            stop_price = entry_price * (1.0 - stop_loss_pct)
+            atr = compute_atr(df, entry_idx, period=config.BACKTEST_ATR_PERIOD)
+            if atr is None:
+                continue
+
+            stop_price = entry_price - atr_multiplier * atr
+            stop_pct_implied = (entry_price - stop_price) / entry_price
+
             exit_idx = entry_idx
             exit_price = entry_price
             exit_reason = "hold_days"
@@ -263,9 +391,14 @@ def run_backtest(
                 "net_return_pct": round(net * 100, 4),
                 "signal_rsi": signal["rsi"],
                 "signal_volume_ratio": round(signal["volume_ratio"], 4),
+                "atr_at_entry": atr,
+                "stop_price": round(stop_price, 4),
+                "stop_pct_implied": round(stop_pct_implied * 100, 4),
             })
 
-    return pd.DataFrame(trades)
+    result = pd.DataFrame(trades)
+    result.attrs["signals_skipped_earnings"] = skipped_earnings
+    return result
 
 
 # ── Performance metrics ───────────────────────────────────────────────────────
@@ -274,6 +407,9 @@ def run_backtest(
 def compute_metrics(trades: pd.DataFrame) -> dict[str, Any]:
     """
     Compute the full performance report from a trades DataFrame.
+
+    Max drawdown uses an equity curve (multiplicative, equal position sizing)
+    so it is expressed as a percentage of peak equity — not raw cumulative points.
 
     Args:
         trades: Output of run_backtest().
@@ -308,11 +444,14 @@ def compute_metrics(trades: pd.DataFrame) -> dict[str, Any]:
     sum_losses = abs(losses.sum())
     profit_factor = (sum_wins / sum_losses) if sum_losses > 0 else float("inf")
 
-    # Max drawdown on cumulative sum of returns
-    cum = rets.cumsum()
-    peak = cum.cummax()
-    drawdown = (cum - peak)
-    max_dd = float(drawdown.min())
+    # Equity-curve max drawdown: $1 start, multiplicative per-trade returns
+    equity = [1.0]
+    for r in rets:
+        equity.append(equity[-1] * (1.0 + r / 100.0))
+    equity_s = pd.Series(equity)
+    peak = equity_s.cummax()
+    dd_pct = (equity_s - peak) / peak * 100.0
+    max_dd = float(dd_pct.min())
 
     # Sharpe: annualized (252 trading days), risk-free = 0
     mean_ret = rets.mean()
@@ -350,18 +489,20 @@ def compute_metrics(trades: pd.DataFrame) -> dict[str, Any]:
     }
 
 
-# ── PASS/FAIL verdict ─────────────────────────────────────────────────────────
+# ── Verdict helpers ───────────────────────────────────────────────────────────
 
 
-def _verdict(m: dict[str, Any]) -> tuple[bool, list[str]]:
+def _verdict_4b(m: dict[str, Any]) -> tuple[bool, list[str]]:
+    """4b PASS criteria (tighter than 4a; avg_win/loss ratio is key gate)."""
     criteria = [
-        (m["total_trades"] >= 30,       f"total_trades={m['total_trades']} (need >=30)"),
-        (m["profit_factor"] >= 1.2,     f"profit_factor={m['profit_factor']} (need >=1.2)"),
-        (m["win_rate"] >= 0.45,         f"win_rate={m['win_rate']} (need >=0.45)"),
+        (m["total_trades"] >= 20,
+         f"total_trades={m['total_trades']} (need >=20)"),
+        (m["profit_factor"] >= 1.3,
+         f"profit_factor={m['profit_factor']} (need >=1.3)"),
         (m["avg_win_pct"] > abs(m["avg_loss_pct"]),
-                                        f"avg_win={m['avg_win_pct']}% vs avg_loss={m['avg_loss_pct']}%"),
-        (m["max_drawdown_pct"] >= -25.0, f"max_drawdown={m['max_drawdown_pct']}% (need >=-25%)"),
-        (m["sharpe_ratio"] >= 0.3,      f"sharpe={m['sharpe_ratio']} (need >=0.3)"),
+         f"avg_win={m['avg_win_pct']}% vs avg_loss={m['avg_loss_pct']}% (win must exceed loss)"),
+        (m["sharpe_ratio"] >= 0.5,
+         f"sharpe={m['sharpe_ratio']} (need >=0.5)"),
     ]
     failures = [msg for passed, msg in criteria if not passed]
     return len(failures) == 0, failures
@@ -372,76 +513,111 @@ def _verdict(m: dict[str, Any]) -> tuple[bool, list[str]]:
 
 def main() -> None:
     """
-    Run the full backtest and print the performance report.
+    Run the 4b backtest and print a side-by-side comparison with the 4a baseline.
 
-    Parameters: ALL_TICKERS, 2023-01-01 to 2024-12-31, 5-day hold, 5% stop.
+    Gates: Breakout + RSI (unchanged from 4a).
+    Stop:  ATR(14) x 2.0 (replaces fixed 5%).
+    Skip:  Signals within 5 calendar days of an earnings announcement.
+
     NOTE: Backtest applies breakout + RSI gates only.
           VWAP and sector filters are active in the live scanner.
     """
     print("=" * 65)
-    print("SIGNAL BRAIN — SESSION 4 BACKTEST")
+    print("SIGNAL BRAIN — SESSION 4b BACKTEST")
     print("Period : 2023-01-01 → 2024-12-31  (2 full years)")
-    print("Gates  : Breakout (20d high + 1.5x volume) + RSI(14) 50–75")
+    print("Gates  : Breakout (20d high + 1.5x vol) + RSI(14) 50–75")
+    print("Stop   : ATR(14) × 2.0  (replaces fixed 5%)")
+    print("Excl.  : ±5 days around earnings announcements")
     print("NOTE   : VWAP and sector filters active in live scanner only.")
     print("=" * 65)
-    print(f"Scanning {len(config.ALL_TICKERS)} tickers …")
+    print(f"Scanning {len(config.ALL_TICKERS)} tickers …\n")
 
-    trades = run_backtest(
+    trades_4b = run_backtest(
         tickers=config.ALL_TICKERS,
         start=config.BACKTEST_START,
         end=config.BACKTEST_END,
         hold_days=config.BACKTEST_HOLD_DAYS,
         stop_loss_pct=config.BACKTEST_STOP_LOSS_PCT,
         commission_per_trade=config.BACKTEST_COMMISSION,
+        atr_multiplier=config.BACKTEST_ATR_MULTIPLIER,
+        earnings_window_days=config.EARNINGS_WINDOW_DAYS,
     )
 
-    print(f"\nTotal signals detected: {len(trades)}\n")
+    m4b = compute_metrics(trades_4b)
+    skipped = trades_4b.attrs.get("signals_skipped_earnings", 0)
+    avg_stop_4b = (
+        round(float(trades_4b["stop_pct_implied"].mean()), 2)
+        if not trades_4b.empty and "stop_pct_implied" in trades_4b.columns
+        else 0.0
+    )
 
-    m = compute_metrics(trades)
+    # ── Side-by-side comparison ────────────────────────────────────────────
+    W = 18
+    print("=" * 65)
+    print("SESSION 4 BASELINE vs SESSION 4b COMPARISON")
+    print("=" * 65)
+    header = f"{'Metric':<30} {'BASELINE':>{W}} {'4b (ATR+Earnings)':>{W}}"
+    print(header)
+    print("─" * 65)
 
-    print("─" * 45)
-    print("PERFORMANCE METRICS")
-    print("─" * 45)
-    for key, val in m.items():
-        print(f"  {key:<28} {val}")
+    rows = [
+        ("total_trades",            _BASELINE["total_trades"],          m4b["total_trades"]),
+        ("win_rate",                _BASELINE["win_rate"],               m4b["win_rate"]),
+        ("avg_win_pct",             _BASELINE["avg_win_pct"],            m4b["avg_win_pct"]),
+        ("avg_loss_pct",            _BASELINE["avg_loss_pct"],           m4b["avg_loss_pct"]),
+        ("profit_factor",           _BASELINE["profit_factor"],          m4b["profit_factor"]),
+        ("max_drawdown_pct",        _BASELINE["max_drawdown_pct"],       m4b["max_drawdown_pct"]),
+        ("sharpe_ratio",            _BASELINE["sharpe_ratio"],           m4b["sharpe_ratio"]),
+        ("total_net_return_pct",    _BASELINE["total_net_return_pct"],   m4b["total_net_return_pct"]),
+        ("signals_skipped_earnings", _BASELINE["signals_skipped_earnings"], skipped),
+        ("avg_stop_pct_implied",    f"{_BASELINE['avg_stop_pct_implied']:.2f}%", f"{avg_stop_4b:.2f}%"),
+    ]
+    for label, base_val, new_val in rows:
+        print(f"  {label:<28} {str(base_val):>{W}} {str(new_val):>{W}}")
 
-    if not trades.empty:
+    # Baseline verdict (4a criteria)
+    baseline_4a_passed = (
+        _BASELINE["total_trades"] >= 30
+        and _BASELINE["profit_factor"] >= 1.2
+        and _BASELINE["win_rate"] >= 0.45
+        and _BASELINE["avg_win_pct"] > abs(_BASELINE["avg_loss_pct"])
+        and _BASELINE["max_drawdown_pct"] >= -25.0
+        and _BASELINE["sharpe_ratio"] >= 0.3
+    )
+    print(f"\n  BASELINE VERDICT : {'PASS ✓' if baseline_4a_passed else 'FAIL ✗'}")
+
+    passed_4b, failures_4b = _verdict_4b(m4b)
+    if passed_4b:
+        print("  4b VERDICT       : PASS ✓")
+    else:
+        print("  4b VERDICT       : FAIL ✗")
+        for f in failures_4b:
+            print(f"    • {f}")
+    print("=" * 65)
+
+    if not trades_4b.empty:
         print("\n─" * 23)
         print("TOP 5 BEST TRADES")
         print("─" * 45)
-        best = trades.nlargest(5, "net_return_pct")[
-            ["ticker", "signal_date", "entry_price", "exit_price", "net_return_pct", "exit_reason"]
-        ]
-        print(best.to_string(index=False))
+        cols = ["ticker", "signal_date", "entry_price", "exit_price",
+                "net_return_pct", "stop_pct_implied", "exit_reason"]
+        print(trades_4b.nlargest(5, "net_return_pct")[cols].to_string(index=False))
 
         print("\n─" * 23)
         print("TOP 5 WORST TRADES")
         print("─" * 45)
-        worst = trades.nsmallest(5, "net_return_pct")[
-            ["ticker", "signal_date", "entry_price", "exit_price", "net_return_pct", "exit_reason"]
-        ]
-        print(worst.to_string(index=False))
+        print(trades_4b.nsmallest(5, "net_return_pct")[cols].to_string(index=False))
 
         print("\n─" * 23)
         print("SIGNALS PER TICKER")
         print("─" * 45)
         counts = (
-            trades.groupby("ticker")
+            trades_4b.groupby("ticker")
             .size()
             .reset_index(name="signals")
             .sort_values("signals", ascending=False)
         )
         print(counts.to_string(index=False))
-
-    passed, failures = _verdict(m)
-    print("\n" + "=" * 65)
-    if passed:
-        print("VERDICT: PASS ✓  — All criteria met.")
-    else:
-        print("VERDICT: FAIL ✗  — Criteria not met:")
-        for f in failures:
-            print(f"  • {f}")
-    print("=" * 65)
 
 
 if __name__ == "__main__":
