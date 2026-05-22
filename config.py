@@ -161,6 +161,28 @@ EARNINGS_WINDOW_DAYS: int = 5
 OOS_START: str = "2025-01-01"
 OOS_END: str = "2025-12-31"
 
+# --- Session 6: day trade engine ---
+
+DAY_TRADE_UNIVERSE_TIER1: list[str] = [
+    "NVDA", "AMD", "TSLA", "AAPL", "META", "AMZN", "GOOGL", "MSFT",
+    "COIN", "PLTR", "MSTR", "NFLX", "CRWD", "PANW",
+]
+
+DAY_TRADE_UNIVERSE_TIER2: list[str] = [
+    "RKLB", "ACHR", "JOBY", "FUTU", "BIDU", "BABA", "NIO", "XPEV",
+    "GME", "HOOD", "SOFI", "MRNA", "CRSP", "RXRX", "APP", "KTOS",
+    "MRVL", "ARM", "SMCI", "RIVN", "IONQ",
+]
+
+DAY_TRADE_UNIVERSE: list[str] = DAY_TRADE_UNIVERSE_TIER1 + DAY_TRADE_UNIVERSE_TIER2
+
+GAP_MIN_PCT: float = 2.0           # minimum gap to be on watchlist
+ORB_MINUTES: int = 15              # opening range window (minutes)
+INTRADAY_VOLUME_MULT: float = 1.5  # volume multiplier for ORB confirmation
+SIGNAL_WINDOW_END_HOUR: int = 11   # stop scanning after 11:30 AM ET
+SIGNAL_WINDOW_END_MINUTE: int = 30
+DISCORD_WEBHOOK_URL: str = os.getenv("DISCORD_WEBHOOK_URL", "")
+
 SECTOR_MAP: dict[str, str | None] = {
     "AAPL": "XLK", "MSFT": "XLK", "NVDA": "XLK", "AMD": "XLK",
     "QCOM": "XLK", "INTC": "XLK", "MU": "XLK", "AVGO": "XLK",
