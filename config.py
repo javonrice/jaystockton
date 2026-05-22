@@ -1,0 +1,70 @@
+"""
+config.py — Centralized configuration for Signal Brain.
+
+Reads all settings from environment variables populated by .env via python-dotenv.
+No other module should call os.getenv or os.environ directly.
+
+Requires:
+    .env file (or Codespaces secrets) with ALPACA_API_KEY and ALPACA_SECRET_KEY.
+
+Returns:
+    Module-level constants and typed accessor functions for all settings.
+"""
+
+import os
+
+from dotenv import load_dotenv
+
+load_dotenv(override=False)
+
+# --- Alpaca API credentials (read lazily via functions to avoid import-time errors) ---
+
+def get_alpaca_api_key() -> str:
+    """Return the Alpaca API key. Raises ValueError if not set."""
+    val = os.getenv("ALPACA_API_KEY", "")
+    if not val:
+        raise ValueError("ALPACA_API_KEY is not set. Check your .env file or Codespaces secrets.")
+    return val
+
+
+def get_alpaca_secret_key() -> str:
+    """Return the Alpaca secret key. Raises ValueError if not set."""
+    val = os.getenv("ALPACA_SECRET_KEY", "")
+    if not val:
+        raise ValueError("ALPACA_SECRET_KEY is not set. Check your .env file or Codespaces secrets.")
+    return val
+
+
+# --- Data feed ---
+ALPACA_FEED: str = os.getenv("ALPACA_FEED", "iex")
+
+# --- Database ---
+DB_PATH: str = os.getenv("DB_PATH", "signal_brain.duckdb")
+
+# --- Logging ---
+LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
+LOG_FILE: str = "logs/signal_brain.log"
+
+# --- Scheduler ---
+POLL_INTERVAL_SECONDS: int = 60
+
+# --- Bars to fetch per cycle ---
+# Fetch last 2 bars per ticker so a slow cycle doesn't miss the most recent completed bar.
+BARS_LIVE_LIMIT: int = 2
+
+# Bars to fetch when market is closed (fallback seed). 390 = one full trading day.
+BARS_FALLBACK_LIMIT: int = int(os.getenv("BARS_FALLBACK_LIMIT", "390"))
+
+# --- Ticker universe ---
+
+TIER_1_TICKERS: list[str] = [
+    "SPY", "QQQ", "AAPL", "MSFT", "NVDA", "AMD", "TSLA", "AMZN",
+    "GOOGL", "META", "NFLX", "CRM", "ORCL", "ADBE", "QCOM", "INTC",
+    "MU", "AVGO", "TSM", "ASML", "ARM", "SMCI",
+]
+
+TIER_2_TICKERS: list[str] = [
+    "XLK", "SMH", "XLF", "XLE", "XBI", "XLV", "XLI", "XLY", "XLC", "ARKK",
+]
+
+ALL_TICKERS: list[str] = TIER_1_TICKERS + TIER_2_TICKERS
