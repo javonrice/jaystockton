@@ -1,7 +1,7 @@
 """
 feeds/market_data.py — Alpaca REST API polling and DuckDB storage for Signal Brain.
 
-Fetches minute bars for every ticker in the watchlist via Alpaca's
+Fetches minute bars and daily bars for every ticker in the watchlist via Alpaca's
 StockHistoricalDataClient, stores them in a local DuckDB database,
 and orchestrates the per-cycle scan called by APScheduler in main.py.
 
@@ -10,8 +10,10 @@ Requires:
     DuckDB database initialised via init_db() before calling store_bars().
 
 Returns:
-    Functions: is_market_open, init_db, fetch_bars, fetch_all_bars,
-               store_bars, run_scanner.
+    Functions: is_market_open, init_db, init_daily_bars_table,
+               fetch_bars, fetch_all_bars, store_bars,
+               fetch_daily_bars, fetch_all_daily_bars, store_daily_bars,
+               run_scanner.
 """
 
 from __future__ import annotations
@@ -198,6 +200,130 @@ def store_bars(conn: duckdb.DuckDBPyConnection, df: pd.DataFrame) -> int:
         return inserted
     finally:
         conn.unregister("_new_bars")
+
+
+def init_daily_bars_table(conn: duckdb.DuckDBPyConnection) -> None:
+    """
+    Create the daily_bars table if it does not exist.
+
+    Schema: ticker TEXT, date DATE, open/high/low/close DOUBLE, volume BIGINT.
+    PRIMARY KEY on (ticker, date) prevents duplicate daily rows.
+
+    Args:
+        conn: Open DuckDB connection.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS daily_bars (
+            ticker  TEXT   NOT NULL,
+            date    DATE   NOT NULL,
+            open    DOUBLE NOT NULL,
+            high    DOUBLE NOT NULL,
+            low     DOUBLE NOT NULL,
+            close   DOUBLE NOT NULL,
+            volume  BIGINT NOT NULL,
+            PRIMARY KEY (ticker, date)
+        )
+    """)
+    logger.info("daily_bars table ready")
+
+
+def fetch_daily_bars(ticker: str, limit: int) -> Optional[pd.DataFrame]:
+    """
+    Fetch the most recent `limit` completed daily bars for a single ticker.
+
+    Args:
+        ticker: Stock symbol, e.g. 'AAPL'.
+        limit: Number of trading days to fetch.
+
+    Returns:
+        DataFrame with columns (ticker, date, open, high, low, close, volume),
+        or None if the API returns no data or raises an error.
+    """
+    try:
+        client = _build_client()
+        end = datetime.datetime.now(tz=datetime.timezone.utc)
+        start = end - datetime.timedelta(days=limit + 10)
+
+        request = StockBarsRequest(
+            symbol_or_symbols=ticker,
+            timeframe=TimeFrame.Day,
+            start=start,
+            end=end,
+            feed=config.ALPACA_FEED,
+            limit=limit,
+        )
+        bars = client.get_stock_bars(request)
+        df: pd.DataFrame = bars.df
+
+        if df.empty:
+            logger.warning("No daily bars returned for %s", ticker)
+            return None
+
+        df = df.reset_index()
+        if "symbol" in df.columns:
+            df = df.rename(columns={"symbol": "ticker"})
+
+        # Alpaca timestamps for daily bars are midnight UTC — cast to DATE.
+        df["date"] = pd.to_datetime(df["timestamp"]).dt.date
+        df = df[["ticker", "date", "open", "high", "low", "close", "volume"]]
+        df["volume"] = df["volume"].astype("int64")
+
+        logger.info("Fetched %d daily bars for %s", len(df), ticker)
+        return df
+
+    except Exception as exc:
+        logger.error("Failed to fetch daily bars for %s: %s", ticker, exc)
+        return None
+
+
+def fetch_all_daily_bars(tickers: list[str], limit: int) -> dict[str, Optional[pd.DataFrame]]:
+    """
+    Fetch daily bars for every ticker in `tickers`.
+
+    Each ticker is fetched independently — one failure never blocks the rest.
+
+    Args:
+        tickers: List of stock symbols.
+        limit: Number of recent trading days per ticker.
+
+    Returns:
+        Dict mapping ticker -> DataFrame (or None on error).
+    """
+    results: dict[str, Optional[pd.DataFrame]] = {}
+    for ticker in tickers:
+        results[ticker] = fetch_daily_bars(ticker, limit)
+    return results
+
+
+def store_daily_bars(conn: duckdb.DuckDBPyConnection, df: pd.DataFrame) -> int:
+    """
+    Insert new daily bars from df into daily_bars, skipping duplicates.
+
+    Uses ON CONFLICT DO NOTHING against PRIMARY KEY (ticker, date).
+
+    Args:
+        conn: Open DuckDB connection with daily_bars table initialised.
+        df: DataFrame with columns matching the daily_bars schema.
+
+    Returns:
+        Number of rows actually inserted (0 if all were duplicates).
+    """
+    if df.empty:
+        return 0
+
+    conn.register("_new_daily_bars", df)
+    try:
+        before = conn.execute("SELECT COUNT(*) FROM daily_bars").fetchone()[0]
+        conn.execute("""
+            INSERT INTO daily_bars (ticker, date, open, high, low, close, volume)
+            SELECT ticker, date, open, high, low, close, volume
+            FROM _new_daily_bars
+            ON CONFLICT (ticker, date) DO NOTHING
+        """)
+        after = conn.execute("SELECT COUNT(*) FROM daily_bars").fetchone()[0]
+        return after - before
+    finally:
+        conn.unregister("_new_daily_bars")
 
 
 def run_scanner(conn: duckdb.DuckDBPyConnection) -> None:

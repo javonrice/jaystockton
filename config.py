@@ -68,3 +68,10 @@ TIER_2_TICKERS: list[str] = [
 ]
 
 ALL_TICKERS: list[str] = TIER_1_TICKERS + TIER_2_TICKERS
+
+# --- Session 2: daily bars + breakout signal ---
+DAILY_BAR_LIMIT: int = 30
+VOLUME_RATIO_MIN: float = 1.5
+BREAKOUT_LOOKBACK: int = 20
+EOD_SCAN_HOUR: int = 16
+EOD_SCAN_MINUTE: int = 5
