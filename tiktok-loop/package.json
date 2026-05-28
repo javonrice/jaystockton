@@ -1,0 +1,23 @@
+{
+  "name": "tiktok-loop",
+  "version": "1.0.0",
+  "description": "LOOP TikTok video",
+  "scripts": {
+    "start": "npx remotion studio",
+    "render": "npx remotion render LoopVideo out/loop.mp4 --height=1920 --width=1080"
+  },
+  "dependencies": {
+    "@remotion/cli": "^4.0.0",
+    "@remotion/google-fonts": "^4.0.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "remotion": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.0",
+    "typescript": "^5.4.0"
+  },
+  "remotion": {
+    "entryPoint": "src/index.ts"
+  }
+}

@@ -1,0 +1,178 @@
+name: Render LOOP TikTok Video
+
+on:
+  workflow_dispatch:
+    inputs:
+      frame:
+        description: 'Single frame number to preview (leave blank for full 38s render)'
+        required: false
+        default: ''
+
+jobs:
+  render:
+    name: Render video
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: tiktok-loop/package-lock.json
+
+      # Remotion needs these system libs for its bundled Chromium
+      - name: Install Chrome system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            libnss3 libatk1.0-0t64 libatk-bridge2.0-0t64 \
+            libcups2t64 libdrm2 libxkbcommon0 libxcomposite1 \
+            libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2t64
+
+      - name: Install dependencies
+        working-directory: tiktok-loop
+        run: npm ci
+
+      - name: Generate voiceover via ElevenLabs
+        working-directory: tiktok-loop
+        env:
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+        run: |
+          python3 - <<'PYEOF'
+          import os, urllib.request, json, sys
+          key = os.environ.get('ELEVENLABS_API_KEY', '')
+          if not key:
+              print('No ELEVENLABS_API_KEY secret set — skipping voiceover generation.')
+              sys.exit(0)
+          text = (
+              "Ever notice how you always lose control at the same time of day? "
+              "Not randomly. The same window. Every time. "
+              "There's a reason for that. "
+              "Your dopamine peaks in the morning... and crashes at night. "
+              "When dopamine drops, your brain scans for the fastest option. "
+              "That scan lasts four minutes. "
+              "Whatever habit is most wired in... wins. "
+              "This isn't a willpower problem. It's a timing problem. "
+              "The loop always runs in the same window. "
+              "Which means it can be mapped. "
+              "I built something for that."
+          )
+          payload = json.dumps({
+              "text": text,
+              "model_id": "eleven_monolingual_v1",
+              "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}
+          }).encode()
+          req = urllib.request.Request(
+              'https://api.elevenlabs.io/v1/text-to-speech/pNInz6obpgDQGcFmaJgB',
+              data=payload,
+              headers={'xi-api-key': key, 'Content-Type': 'application/json'}
+          )
+          try:
+              with urllib.request.urlopen(req) as resp:
+                  data = resp.read()
+          except Exception as e:
+              print(f'ElevenLabs API error: {e}', file=sys.stderr)
+              sys.exit(1)
+          if len(data) < 1000:
+              print(f'ElevenLabs returned too few bytes ({len(data)}) — check key/quota', file=sys.stderr)
+              sys.exit(1)
+          with open('public/voiceover.mp3', 'wb') as f:
+              f.write(data)
+          print(f'voiceover.mp3 generated ({len(data)} bytes)')
+          PYEOF
+
+      - name: Generate silent SFX stubs if missing
+        working-directory: tiktok-loop
+        run: |
+          python3 - <<'PYEOF'
+          import wave, struct, os
+
+          def make_silent_wav(path, duration_ms=200):
+              if os.path.exists(path) and os.path.getsize(path) > 100:
+                  print(f'{path}: already present, skipping')
+                  return
+              sample_rate = 44100
+              num_samples = int(sample_rate * duration_ms / 1000)
+              with wave.open(path, 'w') as f:
+                  f.setnchannels(1)
+                  f.setsampwidth(2)
+                  f.setframerate(sample_rate)
+                  f.writeframes(struct.pack('<' + 'h' * num_samples, *([0] * num_samples)))
+              print(f'{path}: created silent stub')
+
+          os.makedirs('public', exist_ok=True)
+          make_silent_wav('public/whoosh.wav')
+          make_silent_wav('public/whip.wav')
+          make_silent_wav('public/ding.wav')
+          PYEOF
+
+      - name: Check for voiceover
+        working-directory: tiktok-loop
+        run: |
+          if [ ! -f public/voiceover.mp3 ] || [ ! -s public/voiceover.mp3 ]; then
+            echo "::warning::public/voiceover.mp3 not found — rendering without audio."
+            echo "SKIP_AUDIO=true" >> "$GITHUB_ENV"
+          else
+            echo "voiceover.mp3 found"
+            echo "SKIP_AUDIO=false" >> "$GITHUB_ENV"
+          fi
+
+      - name: Remove audio if voiceover missing
+        if: env.SKIP_AUDIO == 'true'
+        working-directory: tiktok-loop
+        run: |
+          node -e "
+            const fs = require('fs');
+            const f = 'src/Composition.tsx';
+            const src = fs.readFileSync(f, 'utf8');
+            const patched = src.replace(/<Audio src=\{staticFile\([^)]+\)\} \/>/g, '{/* no voiceover.mp3 */}');
+            fs.writeFileSync(f, patched);
+            console.log('Audio line removed from Composition.tsx');
+          "
+
+      - name: Ensure Remotion browser
+        working-directory: tiktok-loop
+        run: npx remotion browser ensure
+
+      - name: Render full video
+        if: ${{ inputs.frame == '' }}
+        working-directory: tiktok-loop
+        run: |
+          mkdir -p out
+          npx remotion render LoopVideo out/loop.mp4 \
+            --gl=angle \
+            --concurrency=1 \
+            --log=verbose
+
+      - name: Render single frame (preview)
+        if: ${{ inputs.frame != '' }}
+        working-directory: tiktok-loop
+        run: |
+          mkdir -p out
+          npx remotion still LoopVideo out/frame-${{ inputs.frame }}.png \
+            --frame=${{ inputs.frame }} \
+            --gl=angle \
+            --scale=0.5
+
+      - name: Upload video
+        if: ${{ inputs.frame == '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: loop-video
+          path: tiktok-loop/out/loop.mp4
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Upload frame preview
+        if: ${{ inputs.frame != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: frame-preview
+          path: tiktok-loop/out/frame-${{ inputs.frame }}.png
+          retention-days: 3
+          if-no-files-found: error
