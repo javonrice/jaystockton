@@ -39,26 +39,52 @@ jobs:
         run: npm ci
 
       - name: Generate voiceover via ElevenLabs
-        if: ${{ secrets.ELEVENLABS_API_KEY != '' }}
         working-directory: tiktok-loop
         env:
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
         run: |
-          curl -s -X POST "https://api.elevenlabs.io/v1/text-to-speech/pNInz6obpgDQGcFmaJgB" \
-            -H "xi-api-key: ${ELEVENLABS_API_KEY}" \
-            -H "Content-Type: application/json" \
-            -d '{
-              "text": "Ever notice how you always lose control at the same time of day? Not randomly. The same window. Every time. There'\''s a reason for that. Your dopamine peaks in the morning... and crashes at night. When dopamine drops, your brain scans for the fastest option. That scan lasts four minutes. Whatever habit is most wired in... wins. This isn'\''t a willpower problem. It'\''s a timing problem. The loop always runs in the same window. Which means it can be mapped. I built something for that.",
+          python3 - <<'PYEOF'
+          import os, urllib.request, json, sys
+          key = os.environ.get('ELEVENLABS_API_KEY', '')
+          if not key:
+              print('No ELEVENLABS_API_KEY secret set — skipping voiceover generation.')
+              sys.exit(0)
+          text = (
+              "Ever notice how you always lose control at the same time of day? "
+              "Not randomly. The same window. Every time. "
+              "There's a reason for that. "
+              "Your dopamine peaks in the morning... and crashes at night. "
+              "When dopamine drops, your brain scans for the fastest option. "
+              "That scan lasts four minutes. "
+              "Whatever habit is most wired in... wins. "
+              "This isn't a willpower problem. It's a timing problem. "
+              "The loop always runs in the same window. "
+              "Which means it can be mapped. "
+              "I built something for that."
+          )
+          payload = json.dumps({
+              "text": text,
               "model_id": "eleven_monolingual_v1",
-              "voice_settings": { "stability": 0.5, "similarity_boost": 0.75 }
-            }' \
-            -o public/voiceover.mp3
-          if [ -s public/voiceover.mp3 ]; then
-            echo "voiceover.mp3 generated ($(wc -c < public/voiceover.mp3) bytes) ✓"
-          else
-            echo "::error::ElevenLabs returned an empty file — check API key and quota"
-            exit 1
-          fi
+              "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}
+          }).encode()
+          req = urllib.request.Request(
+              'https://api.elevenlabs.io/v1/text-to-speech/pNInz6obpgDQGcFmaJgB',
+              data=payload,
+              headers={'xi-api-key': key, 'Content-Type': 'application/json'}
+          )
+          try:
+              with urllib.request.urlopen(req) as resp:
+                  data = resp.read()
+          except Exception as e:
+              print(f'ElevenLabs API error: {e}', file=sys.stderr)
+              sys.exit(1)
+          if len(data) < 1000:
+              print(f'ElevenLabs returned too few bytes ({len(data)}) — check key/quota', file=sys.stderr)
+              sys.exit(1)
+          with open('public/voiceover.mp3', 'wb') as f:
+              f.write(data)
+          print(f'voiceover.mp3 generated ({len(data)} bytes)')
+          PYEOF
 
       - name: Check for voiceover
         working-directory: tiktok-loop
@@ -67,7 +93,7 @@ jobs:
             echo "::warning::public/voiceover.mp3 not found — rendering without audio."
             echo "SKIP_AUDIO=true" >> "$GITHUB_ENV"
           else
-            echo "voiceover.mp3 found ✓"
+            echo "voiceover.mp3 found"
             echo "SKIP_AUDIO=false" >> "$GITHUB_ENV"
           fi
 
@@ -89,7 +115,7 @@ jobs:
         run: npx remotion browser ensure
 
       - name: Render full video
-        if: inputs.frame == ''
+        if: ${{ inputs.frame == '' }}
         working-directory: tiktok-loop
         run: |
           mkdir -p out
@@ -99,7 +125,7 @@ jobs:
             --log=verbose
 
       - name: Render single frame (preview)
-        if: inputs.frame != ''
+        if: ${{ inputs.frame != '' }}
         working-directory: tiktok-loop
         run: |
           mkdir -p out
@@ -109,7 +135,7 @@ jobs:
             --scale=0.5
 
       - name: Upload video
-        if: inputs.frame == ''
+        if: ${{ inputs.frame == '' }}
         uses: actions/upload-artifact@v4
         with:
           name: loop-video
@@ -118,7 +144,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload frame preview
-        if: inputs.frame != ''
+        if: ${{ inputs.frame != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: frame-preview
