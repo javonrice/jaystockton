@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       frame:
-        description: 'Render a single frame instead of full video (leave blank for full render)'
+        description: 'Single frame number to preview (leave blank for full 38s render)'
         required: false
         default: ''
 
@@ -25,6 +25,15 @@ jobs:
           cache: 'npm'
           cache-dependency-path: tiktok-loop/package-lock.json
 
+      # Remotion needs these system libs for its bundled Chromium
+      - name: Install Chrome system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            libnss3 libatk1.0-0t64 libatk-bridge2.0-0t64 \
+            libcups2t64 libdrm2 libxkbcommon0 libxcomposite1 \
+            libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2t64
+
       - name: Install dependencies
         working-directory: tiktok-loop
         run: npm ci
@@ -40,11 +49,18 @@ jobs:
             echo "SKIP_AUDIO=false" >> "$GITHUB_ENV"
           fi
 
-      - name: Patch audio out if voiceover missing
+      - name: Remove audio if voiceover missing
         if: env.SKIP_AUDIO == 'true'
         working-directory: tiktok-loop
         run: |
-          sed -i 's|<Audio src={staticFile.*/>|{/* audio removed: no voiceover.mp3 */}|' src/Composition.tsx
+          node -e "
+            const fs = require('fs');
+            const f = 'src/Composition.tsx';
+            const src = fs.readFileSync(f, 'utf8');
+            const patched = src.replace(/<Audio src=\{staticFile\([^)]+\)\} \/>/g, '{/* no voiceover.mp3 */}');
+            fs.writeFileSync(f, patched);
+            console.log('Audio line removed from Composition.tsx');
+          "
 
       - name: Ensure Remotion browser
         working-directory: tiktok-loop
@@ -57,7 +73,7 @@ jobs:
           mkdir -p out
           npx remotion render LoopVideo out/loop.mp4 \
             --gl=angle \
-            --concurrency=2 \
+            --concurrency=1 \
             --log=verbose
 
       - name: Render single frame (preview)
@@ -70,7 +86,7 @@ jobs:
             --gl=angle \
             --scale=0.5
 
-      - name: Upload video artifact
+      - name: Upload video
         if: inputs.frame == ''
         uses: actions/upload-artifact@v4
         with:
@@ -79,11 +95,11 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-      - name: Upload frame artifact
+      - name: Upload frame preview
         if: inputs.frame != ''
         uses: actions/upload-artifact@v4
         with:
-          name: frame-${{ inputs.frame }}
+          name: frame-preview
           path: tiktok-loop/out/frame-${{ inputs.frame }}.png
           retention-days: 3
           if-no-files-found: error
