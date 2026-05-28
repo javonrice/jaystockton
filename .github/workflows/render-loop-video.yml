@@ -1,0 +1,89 @@
+name: Render LOOP TikTok Video
+
+on:
+  workflow_dispatch:
+    inputs:
+      frame:
+        description: 'Render a single frame instead of full video (leave blank for full render)'
+        required: false
+        default: ''
+
+jobs:
+  render:
+    name: Render video
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: tiktok-loop/package-lock.json
+
+      - name: Install dependencies
+        working-directory: tiktok-loop
+        run: npm ci
+
+      - name: Check for voiceover
+        working-directory: tiktok-loop
+        run: |
+          if [ ! -f public/voiceover.mp3 ]; then
+            echo "::warning::public/voiceover.mp3 not found — rendering without audio."
+            echo "SKIP_AUDIO=true" >> "$GITHUB_ENV"
+          else
+            echo "voiceover.mp3 found ✓"
+            echo "SKIP_AUDIO=false" >> "$GITHUB_ENV"
+          fi
+
+      - name: Patch audio out if voiceover missing
+        if: env.SKIP_AUDIO == 'true'
+        working-directory: tiktok-loop
+        run: |
+          sed -i 's|<Audio src={staticFile.*/>|{/* audio removed: no voiceover.mp3 */}|' src/Composition.tsx
+
+      - name: Ensure Remotion browser
+        working-directory: tiktok-loop
+        run: npx remotion browser ensure
+
+      - name: Render full video
+        if: inputs.frame == ''
+        working-directory: tiktok-loop
+        run: |
+          mkdir -p out
+          npx remotion render LoopVideo out/loop.mp4 \
+            --gl=angle \
+            --concurrency=2 \
+            --log=verbose
+
+      - name: Render single frame (preview)
+        if: inputs.frame != ''
+        working-directory: tiktok-loop
+        run: |
+          mkdir -p out
+          npx remotion still LoopVideo out/frame-${{ inputs.frame }}.png \
+            --frame=${{ inputs.frame }} \
+            --gl=angle \
+            --scale=0.5
+
+      - name: Upload video artifact
+        if: inputs.frame == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: loop-video
+          path: tiktok-loop/out/loop.mp4
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Upload frame artifact
+        if: inputs.frame != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: frame-${{ inputs.frame }}
+          path: tiktok-loop/out/frame-${{ inputs.frame }}.png
+          retention-days: 3
+          if-no-files-found: error
