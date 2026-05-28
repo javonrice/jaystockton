@@ -1,29 +1,24 @@
 import React from 'react';
-import { AbsoluteFill, Easing, interpolate, useCurrentFrame } from 'remotion';
-import { INDIGO, INDIGO_GLOW, WHITE_DIM } from '../theme';
-import { TROUGH_X, TROUGH_Y } from './WaveScene';
+import { AbsoluteFill, interpolate, spring, useCurrentFrame, useVideoConfig } from 'remotion';
+import { RED_PURPLE, RED_PURPLE_GLOW, WHITE_DIM } from '../theme';
+import { TROUGH_X, TROUGH_Y, WAVE_PATH } from '../waveGeometry';
 import { DM_SANS } from '../fonts';
 
-// 8 radar lines at different angles from the trough
 const LINES = [
-  { angle: -80, bright: false },
-  { angle: -55, bright: false },
-  { angle: -30, bright: true },  // the bright one
-  { angle: -5,  bright: false },
-  { angle: 20,  bright: false },
-  { angle: 45,  bright: false },
-  { angle: 70,  bright: false },
-  { angle: 100, bright: false },
+  { angle: -80 }, { angle: -55 }, { angle: -30, bright: true },
+  { angle: -5  }, { angle: 20  }, { angle: 45  },
+  { angle: 70  }, { angle: 100 },
 ];
 
 const LINE_LEN = 320;
+const SCAN_TEXT = 'scanning for the fastest option';
 
 export const RadarScene: React.FC = () => {
   const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
   const DURATION = 160;
   const FADE = 15;
-  const SHOOT_START = 20; // local frame when lines start shooting
-  const SHOOT_DUR = 40;
+  const SHOOT_START = 20;
 
   const sceneOpacity = interpolate(
     frame,
@@ -32,86 +27,116 @@ export const RadarScene: React.FC = () => {
     { extrapolateRight: 'clamp' },
   );
 
-  // Wave dims in background – handled by WaveScene dimAt prop, but we also show a dim wave here
-  const bgWaveOpacity = interpolate(frame, [0, FADE], [0, 0.2], { extrapolateRight: 'clamp' });
+  const bgWaveOpacity = interpolate(frame, [0, FADE], [0, 0.18], { extrapolateRight: 'clamp' });
 
-  // Each line shoots out
-  const shootProgress = interpolate(
-    frame,
-    [SHOOT_START, SHOOT_START + SHOOT_DUR],
-    [0, 1],
-    { extrapolateRight: 'clamp', easing: Easing.bezier(0.22, 1, 0.36, 1) },
+  // Staggered spring per line
+  const lineLen = LINES.map((_, i) =>
+    spring({
+      frame: Math.max(0, frame - SHOOT_START - i * 3),
+      fps,
+      config: { damping: 18, stiffness: 180 },
+      to: LINE_LEN,
+      durationInFrames: 35,
+    })
   );
 
-  // Scanning flicker on bright line
-  const scanFlicker = 0.6 + 0.4 * Math.sin((frame / 8) * Math.PI);
+  // Rotating sweep (one revolution per 60 frames)
+  const sweepAngle = ((frame % 60) / 60) * 360;
+  const sweepRad = (sweepAngle * Math.PI) / 180;
+  const sweepEndRad = ((sweepAngle + 30) * Math.PI) / 180;
+  const sweepSx = TROUGH_X + LINE_LEN * Math.cos(sweepRad);
+  const sweepSy = TROUGH_Y + LINE_LEN * Math.sin(sweepRad);
+  const sweepEx = TROUGH_X + LINE_LEN * Math.cos(sweepEndRad);
+  const sweepEy = TROUGH_Y + LINE_LEN * Math.sin(sweepEndRad);
+  const sweepOpacity = interpolate(frame, [SHOOT_START + 20, SHOOT_START + 35], [0, 0.5], { extrapolateRight: 'clamp' });
 
-  // "Brain scanning" text fades in
-  const textOpacity = interpolate(frame, [60, 80], [0, 1], { extrapolateRight: 'clamp' });
+  // Flicker on bright line
+  const scanFlicker = 0.55 + 0.45 * Math.sin((frame / 8) * Math.PI);
+
+  // Typewriter text
+  const typeProgress = interpolate(frame, [60, 95], [0, 1], { extrapolateRight: 'clamp' });
+  const visibleChars = Math.floor(typeProgress * SCAN_TEXT.length);
+  const displayText = SCAN_TEXT.slice(0, visibleChars);
+  const cursor = frame >= 60 && frame < 130 && frame % 16 < 8 ? '|' : '';
+
+  // Origin dot
+  const dotOpacity = interpolate(frame, [0, FADE], [0, 1], { extrapolateRight: 'clamp' });
 
   return (
     <AbsoluteFill style={{ opacity: sceneOpacity }}>
       <svg width={1080} height={1920} style={{ position: 'absolute', inset: 0 }}>
+        {/* Dim wave ghost in background with perspective feel */}
+        <g opacity={bgWaveOpacity} transform={`translate(0, 40) scale(1, 0.94)`}>
+          <path
+            d={WAVE_PATH}
+            fill="none"
+            stroke={RED_PURPLE}
+            strokeWidth={2}
+            style={{ filter: `blur(1px)` }}
+          />
+        </g>
+
         {/* Origin dot */}
         <circle
           cx={TROUGH_X} cy={TROUGH_Y} r={10}
-          fill={INDIGO}
-          opacity={interpolate(frame, [0, FADE], [0, 1], { extrapolateRight: 'clamp' })}
-          style={{ filter: `drop-shadow(0 0 8px ${INDIGO_GLOW})` }}
+          fill={RED_PURPLE}
+          opacity={dotOpacity}
+          style={{ filter: `drop-shadow(0 0 8px ${RED_PURPLE_GLOW})` }}
         />
 
-        {/* Radar lines */}
+        {/* Radar lines with staggered spring */}
         {LINES.map(({ angle, bright }, i) => {
           const rad = (angle * Math.PI) / 180;
-          const ex = TROUGH_X + LINE_LEN * Math.cos(rad);
-          const ey = TROUGH_Y + LINE_LEN * Math.sin(rad);
-          const opacity = bright ? scanFlicker : 0.3;
-          const len = shootProgress * LINE_LEN;
-          const lx = TROUGH_X + len * Math.cos(rad);
-          const ly = TROUGH_Y + len * Math.sin(rad);
+          const len = lineLen[i];
+          const ex = TROUGH_X + len * Math.cos(rad);
+          const ey = TROUGH_Y + len * Math.sin(rad);
+          const opacity = bright ? scanFlicker : 0.28;
 
           return (
             <g key={i}>
               <line
                 x1={TROUGH_X} y1={TROUGH_Y}
-                x2={lx} y2={ly}
-                stroke={bright ? INDIGO : WHITE_DIM}
+                x2={ex} y2={ey}
+                stroke={bright ? RED_PURPLE : `rgba(192,63,192,0.6)`}
                 strokeWidth={bright ? 3 : 1.5}
                 opacity={opacity}
-                style={bright ? { filter: `drop-shadow(0 0 6px ${INDIGO_GLOW})` } : undefined}
+                style={bright ? { filter: `drop-shadow(0 0 8px ${RED_PURPLE_GLOW})` } : undefined}
               />
-              {/* Tip dot on bright line */}
-              {bright && shootProgress > 0.5 && (
+              {bright && len > LINE_LEN * 0.5 && (
                 <circle
-                  cx={lx} cy={ly} r={5}
-                  fill={INDIGO}
+                  cx={ex} cy={ey} r={5}
+                  fill={RED_PURPLE}
                   opacity={scanFlicker * 0.9}
+                  style={{ filter: `drop-shadow(0 0 6px ${RED_PURPLE_GLOW})` }}
                 />
               )}
             </g>
           );
         })}
 
-        {/* Scan ring */}
-        <circle
-          cx={TROUGH_X} cy={TROUGH_Y}
-          r={interpolate(frame, [SHOOT_START, SHOOT_START + SHOOT_DUR], [0, LINE_LEN], { extrapolateRight: 'clamp' })}
-          fill="none"
-          stroke={INDIGO}
-          strokeWidth={1}
-          opacity={interpolate(frame, [SHOOT_START, SHOOT_START + 10, SHOOT_START + SHOOT_DUR], [0, 0.4, 0], { extrapolateRight: 'clamp' })}
+        {/* Rotating sweep wedge */}
+        <path
+          d={`M ${TROUGH_X},${TROUGH_Y} L ${sweepSx},${sweepSy} A ${LINE_LEN},${LINE_LEN} 0 0 1 ${sweepEx},${sweepEy} Z`}
+          fill={RED_PURPLE}
+          opacity={sweepOpacity * 0.18}
+        />
+        <line
+          x1={TROUGH_X} y1={TROUGH_Y}
+          x2={sweepSx} y2={sweepSy}
+          stroke={RED_PURPLE}
+          strokeWidth={2}
+          opacity={sweepOpacity * 0.7}
         />
 
-        {/* Label */}
+        {/* Typewriter label */}
         <text
           x={540} y={1200}
           textAnchor="middle"
           fill={WHITE_DIM}
           fontSize={34}
           fontFamily={DM_SANS}
-          opacity={textOpacity}
         >
-          scanning for the fastest option
+          {displayText}{cursor}
         </text>
       </svg>
     </AbsoluteFill>

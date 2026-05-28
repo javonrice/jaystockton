@@ -1,11 +1,13 @@
 import React from 'react';
-import { AbsoluteFill, Easing, interpolate, useCurrentFrame } from 'remotion';
-import { INDIGO, INDIGO_GLOW, WHITE } from '../theme';
+import { AbsoluteFill, Easing, interpolate, spring, useCurrentFrame, useVideoConfig } from 'remotion';
+import { INDIGO, INDIGO_GLOW, RED_PURPLE, RED_PURPLE_GLOW, WHITE } from '../theme';
 import { SYNE } from '../fonts';
+import { LightLeakOverlay } from '../components/LightLeakOverlay';
 
 export const WordsScene: React.FC = () => {
   const frame = useCurrentFrame();
-  const DURATION = 95;
+  const { fps } = useVideoConfig();
+  const DURATION = 110;
   const FADE = 12;
 
   const sceneOpacity = interpolate(
@@ -15,20 +17,33 @@ export const WordsScene: React.FC = () => {
     { extrapolateRight: 'clamp' },
   );
 
-  // WILLPOWER fades in
-  const willOpacity = interpolate(frame, [0, 20], [0, 1], { extrapolateRight: 'clamp' });
+  // WILLPOWER: spring slam-down entry
+  const willSpringY = spring({ frame, fps, config: { damping: 8, stiffness: 200 }, from: -80, to: 0 });
+  const willSpringS = spring({ frame, fps, config: { damping: 8, stiffness: 200 }, from: 1.15, to: 1 });
+  const willVisible = frame >= 1 ? 1 : 0;
 
-  // Strikethrough line draws left to right
+  // Strikethrough draws left-to-right (RED_PURPLE, violent/decisive)
   const strikeWidth = interpolate(frame, [22, 45], [0, 560], {
     extrapolateRight: 'clamp',
     easing: Easing.bezier(0.22, 1, 0.36, 1),
   });
 
-  // TIMING fades in
-  const timingOpacity = interpolate(frame, [48, 65], [0, 1], { extrapolateRight: 'clamp' });
+  // WILLPOWER dims out after strikethrough completes
+  const willOpacityBase = interpolate(frame, [45, 60], [0.55, 0.18], { extrapolateRight: 'clamp' });
 
-  // TIMING glow pulses
-  const timingGlow = 0.7 + 0.3 * Math.sin((frame / 20) * Math.PI);
+  // TIMING: spring scale + rise-up with low damping = 2-3 bounces
+  const tFrame = Math.max(0, frame - 48);
+  const timingScale = spring({ frame: tFrame, fps, config: { damping: 6, stiffness: 300 }, from: 0, to: 1 });
+  const timingY = spring({ frame: tFrame, fps, config: { damping: 6, stiffness: 300 }, from: 40, to: 0 });
+
+  // Impact color flash: RED_PURPLE on first bounce frames, settles to INDIGO
+  const impactFlash = interpolate(tFrame, [0, 3, 8], [0, 1, 0], { extrapolateRight: 'clamp' });
+  const glowR = Math.floor(108 + impactFlash * 84);   // 108 → 192
+  const glowG = Math.floor(99 - impactFlash * 36);    // 99 → 63
+  const glowA1 = (0.45 + impactFlash * 0.4).toFixed(2);
+  const glowA2 = (0.2 + impactFlash * 0.2).toFixed(2);
+  const timingGlowPulse = 0.7 + 0.3 * Math.sin((frame / 18) * Math.PI);
+  const timingGlowColor = `rgba(${glowR}, ${glowG}, 255, ${glowA1})`;
 
   return (
     <AbsoluteFill
@@ -41,21 +56,29 @@ export const WordsScene: React.FC = () => {
       }}
     >
       {/* WILLPOWER + strikethrough */}
-      <div style={{ position: 'relative', display: 'inline-block', marginTop: -160 }}>
+      <div
+        style={{
+          position: 'relative',
+          display: 'inline-block',
+          marginTop: -180,
+          opacity: willVisible * willOpacityBase,
+          transform: `translateY(${willSpringY}px) scale(${willSpringS})`,
+          willChange: 'transform',
+        }}
+      >
         <div
           style={{
             fontFamily: SYNE,
             fontWeight: 700,
             fontSize: 108,
             color: WHITE,
-            opacity: willOpacity * 0.55,
             letterSpacing: -2,
             lineHeight: 1,
           }}
         >
           WILLPOWER
         </div>
-        {/* Strikethrough line */}
+        {/* RED_PURPLE strikethrough */}
         <div
           style={{
             position: 'absolute',
@@ -63,30 +86,37 @@ export const WordsScene: React.FC = () => {
             left: '50%',
             transform: 'translate(-50%, -50%)',
             width: strikeWidth,
-            height: 6,
-            backgroundColor: INDIGO,
-            borderRadius: 3,
-            boxShadow: `0 0 16px ${INDIGO_GLOW}`,
+            height: 7,
+            backgroundColor: RED_PURPLE,
+            borderRadius: 4,
+            boxShadow: `0 0 18px ${RED_PURPLE_GLOW}, 0 0 40px ${RED_PURPLE_GLOW}`,
           }}
         />
       </div>
 
-      {/* TIMING */}
+      {/* TIMING — the emotional peak */}
       <div
         style={{
           fontFamily: SYNE,
           fontWeight: 700,
-          fontSize: 120,
+          fontSize: 130,
           color: INDIGO,
-          opacity: timingOpacity,
           letterSpacing: -2,
           lineHeight: 1,
-          marginTop: 20,
-          textShadow: `0 0 ${40 * timingGlow}px ${INDIGO_GLOW}, 0 0 ${80 * timingGlow}px rgba(108,99,255,0.2)`,
+          marginTop: 24,
+          transform: `scale(${timingScale}) translateY(${timingY}px)`,
+          opacity: frame >= 48 ? 1 : 0,
+          textShadow: `0 0 ${40 * timingGlowPulse}px ${timingGlowColor}, 0 0 ${80 * timingGlowPulse}px rgba(108,99,255,${glowA2})`,
+          willChange: 'transform',
         }}
       >
         TIMING
       </div>
+
+      {/* Climax flash when TIMING lands */}
+      {frame >= 48 && frame < 58 && (
+        <LightLeakOverlay corner="center" colorHint="white" durationInFrames={10} />
+      )}
     </AbsoluteFill>
   );
 };
