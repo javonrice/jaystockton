@@ -5,23 +5,24 @@ import { SYNE, DM_SANS } from '../fonts';
 
 export const CTAScene: React.FC = () => {
   const frame = useCurrentFrame();
-  const DURATION = 45;
+  const DURATION = 145;
 
   const sceneOpacity = interpolate(
     frame,
-    [0, 10, DURATION - 12, DURATION],
+    [0, 12, DURATION - 18, DURATION],
     [0, 1, 1, 0],
     { extrapolateRight: 'clamp' },
   );
 
-  const line1Opacity = interpolate(frame, [0, 12], [0, 1], { extrapolateRight: 'clamp' });
-  const loopOpacity = interpolate(frame, [8, 20], [0, 1], { extrapolateRight: 'clamp' });
-  const line3Opacity = interpolate(frame, [16, 28], [0, 1], { extrapolateRight: 'clamp' });
+  const line1Opacity = interpolate(frame, [0, 14], [0, 1], { extrapolateRight: 'clamp' });
+  const urlOpacity  = interpolate(frame, [10, 26], [0, 1], { extrapolateRight: 'clamp' });
+  const line3Opacity = interpolate(frame, [22, 36], [0, 1], { extrapolateRight: 'clamp' });
 
-  // LOOP slight scale-in
-  const loopScale = interpolate(frame, [8, 22], [0.85, 1], {
+  const urlScale = interpolate(frame, [10, 28], [0.82, 1], {
     extrapolateRight: 'clamp',
   });
+
+  const glowPulse = 0.7 + 0.3 * Math.sin((Math.max(0, frame - 28) / 22) * Math.PI);
 
   return (
     <AbsoluteFill
@@ -39,8 +40,8 @@ export const CTAScene: React.FC = () => {
           fontSize: 44,
           color: WHITE_DIM,
           opacity: line1Opacity,
-          marginBottom: 8,
-          marginTop: -60,
+          marginBottom: 20,
+          marginTop: -80,
           textAlign: 'center',
         }}
       >
@@ -51,16 +52,17 @@ export const CTAScene: React.FC = () => {
         style={{
           fontFamily: SYNE,
           fontWeight: 700,
-          fontSize: 180,
+          fontSize: 96,
           color: WHITE,
-          opacity: loopOpacity,
-          letterSpacing: -6,
-          lineHeight: 0.9,
-          transform: `scale(${loopScale})`,
-          textShadow: `0 0 80px rgba(108,99,255,0.4)`,
+          opacity: urlOpacity,
+          letterSpacing: -2,
+          lineHeight: 1,
+          transform: `scale(${urlScale})`,
+          textShadow: `0 0 ${60 * glowPulse}px rgba(108,99,255,0.5), 0 0 ${120 * glowPulse}px rgba(108,99,255,0.2)`,
+          textAlign: 'center',
         }}
       >
-        LOOP
+        seeyourloop.com
       </div>
 
       <div
@@ -69,7 +71,7 @@ export const CTAScene: React.FC = () => {
           fontSize: 42,
           color: INDIGO,
           opacity: line3Opacity,
-          marginTop: 16,
+          marginTop: 20,
           letterSpacing: 1,
           textShadow: `0 0 20px ${INDIGO_GLOW}`,
         }}

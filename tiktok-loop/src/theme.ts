@@ -9,4 +9,4 @@ export const WHITE_FAINT = 'rgba(255, 255, 255, 0.15)';
 export const W = 1080;
 export const H = 1920;
 export const FPS = 30;
-export const DURATION = 38 * FPS; // 1140 frames
+export const DURATION = 41 * FPS; // 1230 frames — extra 3s for CTA hold
