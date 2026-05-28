@@ -38,10 +38,32 @@ jobs:
         working-directory: tiktok-loop
         run: npm ci
 
+      - name: Generate voiceover via ElevenLabs
+        if: ${{ secrets.ELEVENLABS_API_KEY != '' }}
+        working-directory: tiktok-loop
+        env:
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+        run: |
+          curl -s -X POST "https://api.elevenlabs.io/v1/text-to-speech/pNInz6obpgDQGcFmaJgB" \
+            -H "xi-api-key: ${ELEVENLABS_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "text": "Ever notice how you always lose control at the same time of day? Not randomly. The same window. Every time. There'\''s a reason for that. Your dopamine peaks in the morning... and crashes at night. When dopamine drops, your brain scans for the fastest option. That scan lasts four minutes. Whatever habit is most wired in... wins. This isn'\''t a willpower problem. It'\''s a timing problem. The loop always runs in the same window. Which means it can be mapped. I built something for that.",
+              "model_id": "eleven_monolingual_v1",
+              "voice_settings": { "stability": 0.5, "similarity_boost": 0.75 }
+            }' \
+            -o public/voiceover.mp3
+          if [ -s public/voiceover.mp3 ]; then
+            echo "voiceover.mp3 generated ($(wc -c < public/voiceover.mp3) bytes) ✓"
+          else
+            echo "::error::ElevenLabs returned an empty file — check API key and quota"
+            exit 1
+          fi
+
       - name: Check for voiceover
         working-directory: tiktok-loop
         run: |
-          if [ ! -f public/voiceover.mp3 ]; then
+          if [ ! -f public/voiceover.mp3 ] || [ ! -s public/voiceover.mp3 ]; then
             echo "::warning::public/voiceover.mp3 not found — rendering without audio."
             echo "SKIP_AUDIO=true" >> "$GITHUB_ENV"
           else
