@@ -37,7 +37,7 @@ export const LoopVideo: React.FC = () => (
     <Sequence from={805}  durationInFrames={140}><CountdownScene /></Sequence>
     <Sequence from={930}  durationInFrames={95}> <WordsScene /></Sequence>
     <Sequence from={1015} durationInFrames={95}> <WindowScene /></Sequence>
-    <Sequence from={1095} durationInFrames={45}> <CTAScene /></Sequence>
+    <Sequence from={1085} durationInFrames={145}><CTAScene /></Sequence>
 
     {/* Subtitles always on top */}
     <Subtitles />
