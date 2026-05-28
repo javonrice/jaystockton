@@ -86,6 +86,31 @@ jobs:
           print(f'voiceover.mp3 generated ({len(data)} bytes)')
           PYEOF
 
+      - name: Generate silent SFX stubs if missing
+        working-directory: tiktok-loop
+        run: |
+          python3 - <<'PYEOF'
+          import wave, struct, os
+
+          def make_silent_wav(path, duration_ms=200):
+              if os.path.exists(path) and os.path.getsize(path) > 100:
+                  print(f'{path}: already present, skipping')
+                  return
+              sample_rate = 44100
+              num_samples = int(sample_rate * duration_ms / 1000)
+              with wave.open(path, 'w') as f:
+                  f.setnchannels(1)
+                  f.setsampwidth(2)
+                  f.setframerate(sample_rate)
+                  f.writeframes(struct.pack('<' + 'h' * num_samples, *([0] * num_samples)))
+              print(f'{path}: created silent stub')
+
+          os.makedirs('public', exist_ok=True)
+          make_silent_wav('public/whoosh.wav')
+          make_silent_wav('public/whip.wav')
+          make_silent_wav('public/ding.wav')
+          PYEOF
+
       - name: Check for voiceover
         working-directory: tiktok-loop
         run: |
